@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'">
+  <title>Hub</title>
+  <link rel="stylesheet" href="../../node_modules/@fontsource-variable/rubik/index.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="wrap" data-state="pill">
+    <span class="ear l"></span>
+    <span class="ear r"></span>
+    <div class="shape">
+
+      <!-- Pilule (état replié) -->
+      <div class="layer layer-pill">
+        <div class="pill-row">
+          <div class="pill-media">
+            <div class="pill-cover"><img alt=""><span data-icon="note"></span></div>
+            <span class="pill-title"></span>
+            <div class="eq"><i></i><i></i><i></i><i></i></div>
+          </div>
+          <div class="pill-clock"><b class="clock-t"></b><span class="clock-d"></span></div>
+          <div class="pill-chips"></div>
+        </div>
+      </div>
+
+      <!-- Notification (Windows, agenda, minuteur) -->
+      <div class="layer layer-notif">
+        <div class="inner notif-inner">
+          <div class="notif-ic"></div>
+          <div class="notif-tx"><small class="notif-app"></small><b class="notif-title"></b><span class="notif-body"></span></div>
+          <button class="notif-x" title="Fermer" data-icon="x"></button>
+        </div>
+      </div>
+
+      <!-- Aperçu musique (quand le morceau change) -->
+      <div class="layer layer-peek">
+        <div class="inner peek-inner" id="peekCard"></div>
+      </div>
+
+      <!-- Panneau ouvert -->
+      <div class="layer layer-open">
+        <div class="inner open-inner">
+          <nav class="tabs">
+            <span class="tab-ind"></span>
+            <button class="tab active" data-tab="controls" title="Contrôles"><span class="tab-ic" data-icon="sliders"></span><b>Contrôles</b></button>
+            <button class="tab" data-tab="today" title="Aujourd'hui"><span class="tab-ic" data-icon="calendar"></span><b>Aujourd'hui</b></button>
+            <button class="tab" data-tab="stats" title="Stats"><span class="tab-ic" data-icon="activity"></span><b>Stats</b></button>
+            <button class="tab" data-tab="clip" title="Presse-papier"><span class="tab-ic" data-icon="clipboard"></span><b>Presse-papier</b></button>
+            <button class="tab" data-tab="apps" title="Apps"><span class="tab-ic" data-icon="grid"></span><b>Apps</b></button>
+            <button class="tab" data-tab="timer" title="Minuteur"><span class="tab-ic" data-icon="timer"></span><b>Minuteur</b></button>
+            <button class="tab" data-tab="wall" title="Fond d'écran"><span class="tab-ic" data-icon="image"></span><b>Fond d'écran</b></button>
+            <button class="tab" data-tab="power" title="Énergie"><span class="tab-ic" data-icon="power"></span><b>Énergie</b></button>
+            <button class="tab" data-tab="settings" title="Paramètres"><span class="tab-ic" data-icon="gear"></span><b>Paramètres</b></button>
+          </nav>
+
+          <section class="pane active" data-pane="controls">
+          <div class="view view-main">
+          <div class="grid">
+            <div class="tile" data-key="wifi">
+              <button class="tile-main"><span class="ic"></span><span class="tx"><b>Wi-Fi</b><small></small></span></button>
+              <button class="tile-more" title="Réseaux Wi-Fi" data-icon="chevron"></button>
+            </div>
+            <div class="tile" data-key="bt">
+              <button class="tile-main"><span class="ic"></span><span class="tx"><b>Bluetooth</b><small></small></span></button>
+              <button class="tile-more" title="Appareils Bluetooth" data-icon="chevron"></button>
+            </div>
+            <div class="tile" data-key="audio">
+              <button class="tile-main"><span class="ic"></span><span class="tx"><b>Son</b><small></small></span></button>
+              <button class="tile-more" title="Sorties audio" data-icon="chevron"></button>
+            </div>
+            <div class="tile wide" data-key="night">
+              <button class="tile-main"><span class="ic" data-icon="moon"></span><span class="tx"><b>Éclairage nocturne</b><small></small></span></button>
+            </div>
+            <div class="tile wide" data-key="dark">
+              <button class="tile-main"><span class="ic" data-icon="contrast"></span><span class="tx"><b>Mode sombre</b><small></small></span></button>
+            </div>
+            <div class="vol">
+              <div class="slider" id="volSlider">
+                <div class="fill"><span class="ic"></span></div>
+              </div>
+              <span class="pct" id="volPct">–</span>
+            </div>
+          </div>
+
+          <div id="openCard"></div>
+          </div>
+
+          <!-- Sous-fenêtre (Wi-Fi / Bluetooth / Son) -->
+          <div class="view view-detail">
+            <div class="d-head">
+              <button class="d-btn d-back" title="Retour" data-icon="back"></button>
+              <div class="d-titles"><b class="d-title"></b><small class="d-sub"></small></div>
+              <button class="d-btn d-refresh" title="Actualiser" data-icon="refresh"></button>
+              <button class="switch" role="switch" title="Activer / désactiver"><i></i></button>
+            </div>
+            <div class="d-body"></div>
+          </div>
+          </section>
+
+          <!-- Aujourd'hui -->
+          <section class="pane" data-pane="today">
+            <div class="today-grid">
+              <div class="card t-now">
+                <div class="t-clock"></div>
+                <div class="t-date"></div>
+                <div class="t-weather"></div>
+              </div>
+              <div class="card t-days"></div>
+              <div class="card t-cal"></div>
+              <div class="card t-side">
+                <div class="t-side-head">
+                  <div class="seg"><button class="seg-b active" data-side="agenda">Agenda</button><button class="seg-b" data-side="notes">Notes</button></div>
+                  <button class="d-btn t-add" title="Ajouter un événement dans Google Agenda" data-icon="plus"></button>
+                </div>
+                <div class="t-agenda scroll"></div>
+                <textarea class="t-notesarea" placeholder="Écris quelque chose…" spellcheck="false" hidden></textarea>
+              </div>
+            </div>
+          </section>
+
+          <!-- Stats -->
+          <section class="pane" data-pane="stats">
+            <div class="stats-grid"></div>
+          </section>
+
+          <!-- Presse-papier -->
+          <section class="pane" data-pane="clip">
+            <div class="bar">
+              <label class="search"><span data-icon="search"></span><input type="text" placeholder="Rechercher dans l'historique" spellcheck="false"></label>
+              <button class="pill-btn ghost clip-pause"></button>
+              <button class="pill-btn ghost clip-clear">Tout effacer</button>
+            </div>
+            <div class="clip-list scroll"></div>
+          </section>
+
+          <!-- Apps -->
+          <section class="pane" data-pane="apps">
+            <div class="bar">
+              <label class="search"><span data-icon="search"></span><input type="text" placeholder="Rechercher une appli" spellcheck="false"></label>
+            </div>
+            <div class="apps-body scroll"></div>
+          </section>
+
+          <!-- Fond d'écran -->
+          <section class="pane" data-pane="wall">
+            <div class="bar">
+              <div class="wall-folder"><span data-icon="folder"></span><b></b></div>
+              <button class="pill-btn ghost wall-change">Changer de dossier</button>
+              <button class="pill-btn wall-random"><span data-icon="shuffle"></span>Au hasard</button>
+            </div>
+            <div class="wall-grid scroll"></div>
+          </section>
+
+          <!-- Minuteur / chrono -->
+          <section class="pane" data-pane="timer">
+            <div class="timer-body"></div>
+          </section>
+
+          <!-- Paramètres -->
+          <section class="pane" data-pane="settings">
+            <div class="set-body scroll"></div>
+          </section>
+
+          <!-- Énergie -->
+          <section class="pane" data-pane="power">
+            <div class="power-row">
+              <button class="power-btn" data-power="lock"><span data-icon="lock"></span><b>Verrouiller</b></button>
+              <button class="power-btn" data-power="sleep"><span data-icon="moon"></span><b>Veille</b></button>
+              <button class="power-btn" data-power="logoff"><span data-icon="logout"></span><b>Déconnexion</b></button>
+              <button class="power-btn danger" data-power="restart"><span data-icon="restart"></span><b>Redémarrer</b></button>
+              <button class="power-btn danger" data-power="shutdown"><span data-icon="power"></span><b>Éteindre</b></button>
+            </div>
+            <div class="power-info"></div>
+          </section>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <template id="cardTpl">
+    <div class="mcard">
+      <div class="m-device"><span data-icon="headphones"></span><span class="m-device-name"></span></div>
+      <div class="m-row">
+        <div class="m-cover"><img alt=""><span data-icon="note"></span></div>
+        <div class="m-info">
+          <div class="m-title"></div>
+          <div class="m-artist"></div>
+        </div>
+        <div class="m-ctrls">
+          <button class="m-btn" data-m="prev" title="Précédent" data-icon="prev"></button>
+          <button class="m-btn play" data-m="toggle" title="Lecture / pause"></button>
+          <button class="m-btn" data-m="next" title="Suivant" data-icon="next"></button>
+        </div>
+        <button class="pill-btn ghost m-open" hidden></button>
+      </div>
+      <div class="m-progress">
+        <span class="m-pos">0:00</span>
+        <div class="m-bar"><svg class="wave" height="16"></svg></div>
+        <span class="m-dur">0:00</span>
+      </div>
+    </div>
+  </template>
+
+  <script src="app.js"></script>
+  <script src="tabs.js"></script>
+</body>
+</html>

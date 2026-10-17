@@ -1,0 +1,46 @@
+# Construit l'installateur Windows (Hub-Setup-x.y.z.exe) sur les serveurs de GitHub.
+#  - à chaque tag "v1.2.3" poussé : crée une Release avec le .exe à télécharger
+#  - bouton « Run workflow » (onglet Actions) : construit le .exe et le met en pièce jointe du run
+name: Construire le .exe
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Numéro de version pris dans le tag (v1.2.3 -> 1.2.3)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: npm version $($env:GITHUB_REF_NAME.TrimStart('v')) --no-git-tag-version --allow-same-version
+
+      - name: Installer les dépendances
+        run: npm install
+
+      - name: Construire l'installateur
+        run: npm run dist
+
+      - name: Joindre le .exe au run
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hub-Setup
+          path: dist/*.exe
+
+      - name: Publier la Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.exe
+          generate_release_notes: true

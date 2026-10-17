@@ -1,0 +1,687 @@
+// Fonctions des onglets Aujourd'hui, Stats, Presse-papier, Apps, Fond d'écran et Énergie (côté Windows).
+const { app, clipboard, nativeImage, dialog, shell } = require('electron');
+const { spawn } = require('child_process');
+const crypto = require('crypto');
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const { eventsBetween } = require('./ical');
+
+const b64 = (s) => Buffer.from(String(s ?? ''), 'utf8').toString('base64');
+const hash = (buf) => crypto.createHash('md5').update(buf).digest('hex');
+
+function setup(ctx) {
+  // ctx = { send, prefs, savePrefs, worker }  (worker = PowerShell lancé à la demande)
+  const handlers = {};
+  const on = (name, fn) => { handlers[name] = fn; };
+
+  // =====================================================================
+  // Aujourd'hui : météo (Open-Meteo, gratuit sans clé) + notes
+  // =====================================================================
+  // La météo est gardée sur le disque : l'onglet s'affiche tout de suite, puis se met à jour si besoin.
+  const FRESH = 20 * 60e3;
+  const timeout = (ms) => AbortSignal.timeout(ms);
+
+  async function locate() {
+    if (ctx.prefs.city && ctx.prefs.city.lat != null) return ctx.prefs.city;
+    const a = ctx.prefs.autoLoc;
+    if (a && Date.now() - a.at < 24 * 3600e3) return a;
+    const r = await fetch('https://ipwho.is/?fields=success,city,latitude,longitude', { signal: timeout(5000) });
+    const j = await r.json();
+    if (!j.success) throw new Error('localisation impossible');
+    ctx.prefs.autoLoc = { name: j.city, lat: j.latitude, lon: j.longitude, at: Date.now() };
+    ctx.savePrefs();
+    return ctx.prefs.autoLoc;
+  }
+
+  let weatherLoading = null;
+  async function fetchWeather() {
+    const loc = await locate();
+    const url = 'https://api.open-meteo.com/v1/forecast'
+      + `?latitude=${loc.lat}&longitude=${loc.lon}`
+      + '&current=temperature_2m,apparent_temperature,weather_code,is_day,wind_speed_10m,relative_humidity_2m'
+      + '&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset'
+      + '&timezone=auto&forecast_days=5';
+    const j = await (await fetch(url, { signal: timeout(6000) })).json();
+    if (!j.current) throw new Error('météo indisponible');
+    const data = {
+      city: loc.name,
+      now: {
+        temp: j.current.temperature_2m, feels: j.current.apparent_temperature,
+        code: j.current.weather_code, day: !!j.current.is_day,
+        wind: j.current.wind_speed_10m, humidity: j.current.relative_humidity_2m,
+      },
+      days: j.daily.time.map((t, i) => ({
+        date: t, code: j.daily.weather_code[i],
+        max: j.daily.temperature_2m_max[i], min: j.daily.temperature_2m_min[i],
+        rain: j.daily.precipitation_probability_max ? j.daily.precipitation_probability_max[i] : null,
+      })),
+      sunrise: j.daily.sunrise[0], sunset: j.daily.sunset[0],
+    };
+    ctx.prefs.weather = { at: Date.now(), data };
+    ctx.savePrefs();
+    return data;
+  }
+  const refreshWeather = () => (weatherLoading = weatherLoading || fetchWeather().finally(() => { weatherLoading = null; }));
+
+  // { data, stale } : data = dernière météo connue (immédiate), stale = une mise à jour est conseillée
+  on('today:weather', async ({ force } = {}) => {
+    const c = ctx.prefs.weather;
+    if (!force && c) return { data: c.data, stale: Date.now() - c.at > FRESH };
+    return { data: await refreshWeather(), stale: false };
+  });
+  // préchargée au démarrage : l'onglet Aujourd'hui s'ouvre directement avec la météo
+  setTimeout(() => { const c = ctx.prefs.weather; if (!c || Date.now() - c.at > FRESH) refreshWeather().catch(() => {}); }, 15000);
+
+  on('today:city', async ({ name }) => {
+    if (!name || !name.trim()) { delete ctx.prefs.city; delete ctx.prefs.weather; ctx.savePrefs(); return { ok: true }; }
+    const r = await fetch(`https://geocoding-api.open-meteo.com/v1/search?count=1&language=fr&name=${encodeURIComponent(name.trim())}`);
+    const j = await r.json();
+    const hit = j.results && j.results[0];
+    if (!hit) return { ok: false };
+    ctx.prefs.city = { name: hit.name, lat: hit.latitude, lon: hit.longitude };
+    delete ctx.prefs.weather;
+    ctx.savePrefs();
+    return { ok: true };
+  });
+
+  on('today:notes', async ({ text } = {}) => {
+    if (typeof text === 'string') { ctx.prefs.notes = text.slice(0, 5000); ctx.savePrefs(); }
+    return ctx.prefs.notes || '';
+  });
+
+  // =====================================================================
+  // Stats : CPU / RAM / disque (Node) + réseau / GPU (PowerShell)
+  // =====================================================================
+  let prevCpu = null;
+  setTimeout(() => cpuLoad(), 0); // premier relevé dès le démarrage : la 1re valeur s'affiche tout de suite
+  let prevNet = null;
+  let statsTimer = null;
+  let statsBusy = false;
+
+  function cpuLoad() {
+    let idle = 0, total = 0;
+    for (const c of os.cpus()) { for (const k in c.times) total += c.times[k]; idle += c.times.idle; }
+    const prev = prevCpu;
+    prevCpu = { idle, total };
+    if (!prev || total === prev.total) return null;
+    return Math.round(100 * (1 - (idle - prev.idle) / (total - prev.total)));
+  }
+
+  function disk() {
+    try {
+      const s = fs.statfsSync(process.platform === 'win32' ? 'C:\\' : '/');
+      return { total: s.blocks * s.bsize, free: s.bavail * s.bsize };
+    } catch { return null; }
+  }
+
+  // Les valeurs lues par Node (CPU, RAM, disque) partent tout de suite ;
+  // celles de PowerShell (réseau, GPU) sont ajoutées dès qu'elles arrivent, sans jamais bloquer l'affichage.
+  let lastPs = {};
+  function statsTick() {
+    const data = {
+      cpu: cpuLoad(), cpuName: (os.cpus()[0] || {}).model, cores: os.cpus().length,
+      ramTotal: os.totalmem(), ramFree: os.freemem(),
+      disk: disk(), uptime: os.uptime(),
+      gpuName: ctx.prefs.gpuName || null,
+      ...lastPs,
+    };
+    ctx.send('feat:event', { type: 'stats', data });
+    if (statsBusy) return;
+    statsBusy = true;
+    ctx.worker.run('Get-Stats', 8000).then((s) => {
+      if (!s) return;
+      const now = Date.now();
+      const ps = { gpu: s.gpu };
+      if (prevNet) {
+        const dt = (now - prevNet.at) / 1000;
+        ps.down = Math.max(0, (s.rx - prevNet.rx) / dt);
+        ps.up = Math.max(0, (s.tx - prevNet.tx) / dt);
+      }
+      prevNet = { rx: s.rx, tx: s.tx, at: now };
+      lastPs = ps;
+    }).catch((e) => console.error('[stats]', e.message)).finally(() => { statsBusy = false; });
+    // nom de la carte graphique : demandé une seule fois, puis gardé
+    if (!ctx.prefs.gpuName && !gpuNameAsked) {
+      gpuNameAsked = true;
+      ctx.worker.run('Get-GpuName', 20000).then((n) => { if (n) { ctx.prefs.gpuName = n; ctx.savePrefs(); } }).catch(() => {});
+    }
+  }
+  let gpuNameAsked = false;
+
+  // Préchauffage : lance PowerShell dès l'ouverture du panneau, pour que les onglets répondent tout de suite
+  function warmup() { ctx.worker.run('Get-NetBytes', 20000).catch(() => {}); }
+
+  on('stats:start', async () => {
+    if (statsTimer) return true;
+    ctx.worker.hold();
+    statsTick();
+    statsTimer = setInterval(statsTick, 1000);
+    return true;
+  });
+  on('stats:stop', async () => {
+    if (statsTimer) ctx.worker.release();
+    clearInterval(statsTimer); statsTimer = null; prevNet = null; lastPs = {};
+    return true;
+  });
+
+  // =====================================================================
+  // Presse-papier : historique (texte + images)
+  // =====================================================================
+  const clipDir = path.join(app.getPath('userData'), 'clips');
+  const clipIndex = path.join(clipDir, 'index.json');
+  const maxClips = () => [25, 50, 100, 200].includes(ctx.prefs.clipMax) ? ctx.prefs.clipMax : 50;
+  let clips = [];
+  let lastSig = null;
+  let saveT = null;
+  try { fs.mkdirSync(clipDir, { recursive: true }); clips = JSON.parse(fs.readFileSync(clipIndex, 'utf8')); } catch { clips = []; }
+
+  const saveClips = () => {
+    clearTimeout(saveT);
+    saveT = setTimeout(() => { try { fs.writeFileSync(clipIndex, JSON.stringify(clips)); } catch {} }, 600);
+  };
+  // on signale juste "ça a changé" : l'interface ne recharge la liste que si l'onglet est affiché
+  const pushClips = () => ctx.send('feat:event', { type: 'clips' });
+
+  function removeFile(c) { if (c.file) { try { fs.unlinkSync(path.join(clipDir, c.file)); } catch {} } }
+
+  function addClip(item) {
+    const same = clips.findIndex((c) => c.sig === item.sig);
+    if (same !== -1) {
+      const [old] = clips.splice(same, 1);
+      old.t = Date.now();
+      clips.unshift(old);
+    } else {
+      clips.unshift(item);
+      // on garde les éléments épinglés + les 50 derniers
+      let unpinned = 0;
+      clips = clips.filter((c) => {
+        if (c.pinned) return true;
+        unpinned++;
+        if (unpinned > maxClips()) { removeFile(c); return false; }
+        return true;
+      });
+    }
+    saveClips();
+    pushClips();
+  }
+
+  // Lecture du presse-papier. Certaines applis annoncent la copie AVANT d'avoir réellement mis le contenu :
+  // si c'est encore vide, on réessaie un peu plus tard.
+  function readClipboard(retry = 3, why = 'windows') {
+    if (ctx.prefs.clipPaused) return;
+    const again = () => { if (retry > 0) setTimeout(() => readClipboard(retry - 1, why), retry === 3 ? 150 : 400); };
+    try {
+      const formats = clipboard.availableFormats();
+      const text = clipboard.readText();
+      if (text && text.trim()) {
+        const sig = 'txt:' + hash(text);
+        if (sig === lastSig) return;
+        lastSig = sig;
+        addClip({ id: crypto.randomUUID(), sig, type: 'text', text: text.slice(0, 20000), t: Date.now(), pinned: false });
+        if (why === 'windows') console.log(`[presse-papier] texte ajouté (${text.length} caractères)`);
+        return;
+      }
+      if (!formats.some((f) => f.startsWith('image/'))) {
+        if (!formats.length) again(); // rien encore : contenu pas prêt
+        return;
+      }
+      const img = clipboard.readImage();
+      if (img.isEmpty()) { again(); return; }
+      const size = img.getSize();
+      const sig = `img:${size.width}x${size.height}:` + hash(img.resize({ width: 32 }).toBitmap());
+      if (sig === lastSig) return;
+      lastSig = sig;
+      const id = crypto.randomUUID();
+      const file = id + '.png';
+      fs.writeFileSync(path.join(clipDir, file), img.toPNG());
+      const thumb = img.resize(size.width > size.height ? { width: 280 } : { height: 160 }).toDataURL();
+      addClip({ id, sig, type: 'image', file, thumb, w: size.width, h: size.height, t: Date.now(), pinned: false });
+      console.log(`[presse-papier] image ajoutée (${size.width}×${size.height})`);
+    } catch (e) {
+      // presse-papier encore verrouillé par l'appli qui vient de copier
+      again();
+    }
+  }
+  // Windows signale chaque nouvelle copie ; en plus, un contrôle léger toutes les 3 s rattrape ce qui aurait été manqué.
+  const onClipboardChange = () => setTimeout(() => readClipboard(3, 'windows'), 60);
+  setInterval(() => readClipboard(0, 'contrôle'), 3000);
+  setTimeout(() => {
+    // au démarrage : on mémorise le contenu actuel sans l'ajouter (évite de re-ajouter la même chose)
+    try { const t = clipboard.readText(); if (t) lastSig = 'txt:' + hash(t); } catch {}
+  }, 0);
+
+  on('clip:list', async () => ({ items: clips, paused: !!ctx.prefs.clipPaused }));
+  on('clip:copy', async ({ id }) => {
+    const c = clips.find((x) => x.id === id);
+    if (!c) return false;
+    if (c.type === 'text') clipboard.writeText(c.text);
+    else clipboard.writeImage(nativeImage.createFromPath(path.join(clipDir, c.file)));
+    lastSig = c.sig;
+    addClip(c);
+    return true;
+  });
+  on('clip:pin', async ({ id }) => {
+    const c = clips.find((x) => x.id === id);
+    if (c) { c.pinned = !c.pinned; saveClips(); pushClips(); }
+    return true;
+  });
+  on('clip:delete', async ({ id }) => {
+    const c = clips.find((x) => x.id === id);
+    if (c) { removeFile(c); clips = clips.filter((x) => x !== c); saveClips(); pushClips(); }
+    return true;
+  });
+  on('clip:clear', async () => {
+    clips.filter((c) => !c.pinned).forEach(removeFile);
+    clips = clips.filter((c) => c.pinned);
+    saveClips(); pushClips();
+    return true;
+  });
+  on('clip:pause', async ({ paused }) => { ctx.prefs.clipPaused = !!paused; ctx.savePrefs(); return !!paused; });
+
+  // =====================================================================
+  // Apps : uniquement celles que tu ajoutes
+  // =====================================================================
+  // v2 : l'ancien cache pouvait contenir des icônes vides (transparentes) -> on repart de zéro
+  const iconFile = path.join(app.getPath('userData'), 'icons-v2.json');
+  try { fs.unlinkSync(path.join(app.getPath('userData'), 'icons.json')); } catch {}
+  let iconCache = {};
+  try { iconCache = JSON.parse(fs.readFileSync(iconFile, 'utf8')); } catch {}
+  for (const k of Object.keys(iconCache)) if (!iconCache[k]) delete iconCache[k];
+  let iconSaveT = null;
+  const saveIcons = () => { clearTimeout(iconSaveT); iconSaveT = setTimeout(() => { try { fs.writeFileSync(iconFile, JSON.stringify(iconCache)); } catch {} }, 1000); };
+
+  let installed = null; // { at, items }
+  let lnkMap = null;
+  const mine = () => (Array.isArray(ctx.prefs.myApps) ? ctx.prefs.myApps : (ctx.prefs.myApps = []));
+
+  const KNOWN_FOLDERS = {
+    '{6D809377-6AF0-444B-8957-A3773F02200E}': process.env.ProgramW6432 || process.env.ProgramFiles,
+    '{7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}': process.env['ProgramFiles(x86)'],
+    '{F38BF404-1D43-42F2-9305-67DE0B28FC23}': process.env.SystemRoot,
+    '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}': process.env.SystemRoot && path.join(process.env.SystemRoot, 'System32'),
+    '{D65231B0-B2F1-4857-A4CE-A8E7C6EA7D27}': process.env.SystemRoot && path.join(process.env.SystemRoot, 'SysWOW64'),
+    '{F1B32785-6FBA-4FCF-9D55-7B8E7F157091}': process.env.LOCALAPPDATA,
+    '{3EB685DB-65F9-4CF6-A03A-E3EF65729F3D}': process.env.APPDATA,
+    // menus Démarrer (raccourcis .lnk / .url, dont les jeux Steam)
+    '{A77F5D77-2E2B-44C3-A6A2-ABA601054A51}': process.env.APPDATA && path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs'),
+    '{0139D44E-6AFE-49F2-8690-3DAFCAE6FFB8}': process.env.ProgramData && path.join(process.env.ProgramData, 'Microsoft', 'Windows', 'Start Menu', 'Programs'),
+  };
+
+  function buildLnkMap() {
+    const map = new Map();
+    const roots = [
+      process.env.ProgramData && path.join(process.env.ProgramData, 'Microsoft', 'Windows', 'Start Menu', 'Programs'),
+      process.env.APPDATA && path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs'),
+      app.getPath('desktop'),
+      process.env.PUBLIC && path.join(process.env.PUBLIC, 'Desktop'),
+    ].filter(Boolean);
+    const walk = (dir, depth) => {
+      let entries = [];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory() && depth < 3) walk(p, depth + 1);
+        else if (/\.(lnk|url)$/i.test(e.name)) {
+          const k = e.name.replace(/\.(lnk|url)$/i, '').toLowerCase();
+          if (!map.has(k)) map.set(k, p);
+        }
+      }
+    };
+    roots.forEach((r) => walk(r, 0));
+    return map;
+  }
+
+  // "%ProgramData%\Riot Games\..." -> "C:\ProgramData\Riot Games\..."
+  const expand = (p) => String(p || '').replace(/%([^%]+)%/g, (m, v) => process.env[v] || process.env[v.toUpperCase()] || m).replace(/^"|"$/g, '').replace(/,-?\d+$/, '');
+
+  // Toutes les pistes possibles pour trouver l'icône d'une appli, de la plus fiable à la moins fiable
+  function iconSources(a) {
+    const out = [];
+    const add = (p) => { p = expand(p); if (p && !out.includes(p)) out.push(p); };
+    let p = a.path || '';
+    if (!p && a.id) {
+      p = a.id;
+      const kf = p.match(/^(\{[0-9A-F-]+\})\\(.*)$/i);
+      if (kf && KNOWN_FOLDERS[kf[1].toUpperCase()]) p = path.join(KNOWN_FOLDERS[kf[1].toUpperCase()], kf[2]);
+      if (!/^[a-z]:\\/i.test(p) || !fs.existsSync(p)) p = '';
+    }
+    if (!p) {
+      if (!lnkMap) lnkMap = buildLnkMap();
+      const n = (a.name || '').toLowerCase();
+      p = lnkMap.get(n) || '';
+      if (!p && n.length > 3) for (const [k, v] of lnkMap) { if (k.startsWith(n) || n.startsWith(k)) { p = v; break; } }
+    }
+    if (!p) return out;
+    if (/\.lnk$/i.test(p)) {
+      try {
+        const l = shell.readShortcutLink(p);
+        if (l.icon) add(l.icon);
+        // raccourcis Riot (Valorant, LoL) : ils lancent le Riot Client, l'icône du jeu est rangée à part
+        const rp = (l.args || '').match(/--launch-product=([\w-]+).*?--launch-patchline=([\w-]+)/i);
+        if (rp && process.env.ProgramData) add(path.join(process.env.ProgramData, 'Riot Games', 'Metadata', `${rp[1]}.${rp[2]}`, `${rp[1]}.${rp[2]}.ico`));
+        add(p); // l'icône du raccourci lui-même, telle que Windows l'affiche
+        if (l.target) add(l.target);
+      } catch {}
+    }
+    if (/\.url$/i.test(p)) {
+      // raccourci internet (jeux Steam, Epic...) : l'icône est indiquée dans le fichier
+      try {
+        const m = fs.readFileSync(p, 'utf8').match(/^IconFile=(.+)$/mi);
+        if (m) add(m[1].trim());
+      } catch {}
+    }
+    add(p);
+    return out;
+  }
+
+  async function fileIcon(src) {
+    if (!src || !fs.existsSync(src)) return null;
+    try {
+      let img = /\.(ico|png)$/i.test(src) ? nativeImage.createFromPath(src) : null;
+      // certains .ico ne se lisent pas directement : on demande alors à Windows de les dessiner
+      if (!img || img.isEmpty()) img = await app.getFileIcon(src, { size: 'large' });
+      if (!img || img.isEmpty()) return null;
+      const sz = img.getSize();
+      if (sz.width > 64) img = img.resize({ width: 64, quality: 'best' });
+      const data = img.toDataURL();
+      return data.length > 300 ? data : null;
+    } catch { return null; }
+  }
+
+  // une icône entièrement transparente (ou presque) ne sert à rien : on la refuse
+  function isBlank(dataUrl) {
+    try {
+      const img = nativeImage.createFromDataURL(dataUrl);
+      if (img.isEmpty()) return true;
+      const px = img.toBitmap();
+      let visible = 0;
+      for (let i = 3; i < px.length; i += 4) if (px[i] > 24) visible++;
+      return visible < (px.length / 4) * 0.04; // moins de 4 % de pixels visibles
+    } catch { return false; }
+  }
+  const good = (d) => typeof d === 'string' && d.startsWith('data:image') && !isBlank(d);
+
+  const iconMiss = new Set(); // échecs gardés seulement pendant cette session (on réessaie au prochain lancement)
+  async function iconOf(a) {
+    const k = a.id || a.path;
+    if (iconCache[k]) return iconCache[k];
+    if (iconMiss.has(k)) return null;
+    let data = null;
+    // 1) on demande l'icône à Windows, exactement comme le menu Démarrer l'affiche (marche pour presque tout)
+    const shellName = a.path ? a.path : 'shell:AppsFolder\\' + a.id;
+    try { data = await ctx.worker.run(`Get-AppIcon '${b64(shellName)}'`, 15000); } catch {}
+    let how = 'Windows';
+    if (!good(data)) data = null;
+    // 2) appli du Microsoft Store : son logo est dans son dossier d'installation
+    if (!data && a.id && a.id.includes('!')) {
+      try { data = await ctx.worker.run(`Get-UwpIcon '${b64(a.id)}'`, 20000); } catch {}
+      if (!good(data)) data = null; else how = 'Microsoft Store';
+    }
+    // 3) fichiers : raccourci, .ico, programme visé...
+    const tried = [];
+    if (!data) for (const src of iconSources(a)) {
+      tried.push(src);
+      data = await fileIcon(src);
+      if (data && !good(data)) data = null;
+      if (data) { how = src; break; }
+    }
+    if (data) { iconCache[k] = data; saveIcons(); console.log(`[icône] « ${a.name} » trouvée (${how})`); }
+    else { iconMiss.add(k); console.log(`[icône] introuvable pour « ${a.name} » (id: ${a.id || a.path}) — essayé : ${tried.join(' | ') || 'aucun fichier trouvé'}`); }
+    return data;
+  }
+
+  async function installedApps() {
+    if (installed && Date.now() - installed.at < 30 * 60e3) return installed.items;
+    const r = await ctx.worker.run('Get-AppsList', 30000);
+    const items = r && r.items ? (Array.isArray(r.items) ? r.items : [r.items]) : [];
+    installed = { at: Date.now(), items };
+    lnkMap = null;
+    return items;
+  }
+
+  const appKey = (a) => (a.id ? 'id:' + a.id : 'path:' + a.path);
+
+  on('apps:mine', async () => mine());
+  on('apps:installed', async () => installedApps());
+  on('apps:add', async ({ id, name, path: p }) => {
+    const list = mine();
+    const entry = id ? { id, name } : { path: p, name: name || path.basename(p).replace(/\.(lnk|url|exe|bat|cmd)$/i, '') };
+    if (!entry.id && !entry.path) return list;
+    entry.key = appKey(entry);
+    if (!list.some((a) => a.key === entry.key)) list.push(entry);
+    ctx.savePrefs();
+    return list;
+  });
+  on('apps:pick', async () => {
+    const r = await dialog.showOpenDialog({
+      title: 'Ajouter une appli ou un jeu',
+      defaultPath: process.env.ProgramFiles || undefined,
+      properties: ['openFile'],
+      filters: [{ name: 'Applis et raccourcis', extensions: ['exe', 'lnk', 'url', 'bat', 'cmd'] }],
+    });
+    if (r.canceled || !r.filePaths[0]) return null;
+    return handlers['apps:add']({ path: r.filePaths[0] });
+  });
+  on('apps:remove', async ({ key }) => {
+    ctx.prefs.myApps = mine().filter((a) => a.key !== key);
+    ctx.savePrefs();
+    return ctx.prefs.myApps;
+  });
+  on('apps:move', async ({ key, to }) => {
+    const list = mine();
+    const i = list.findIndex((a) => a.key === key);
+    if (i === -1) return list;
+    const [a] = list.splice(i, 1);
+    list.splice(Math.max(0, Math.min(list.length, to)), 0, a);
+    ctx.savePrefs();
+    return list;
+  });
+  on('apps:icons', async ({ items }) => {
+    const out = {};
+    for (const a of (items || []).slice(0, 40)) out[a.id || a.path] = await iconOf(a);
+    return out;
+  });
+  on('apps:launch', async ({ key }) => {
+    const a = mine().find((x) => x.key === key);
+    if (!a) return false;
+    if (a.path) { const err = await shell.openPath(a.path); return !err; }
+    spawn('explorer.exe', ['shell:AppsFolder\\' + a.id], { detached: true, stdio: 'ignore' }).unref();
+    return true;
+  });
+
+
+  // =====================================================================
+  // Agenda : Google Agenda via son « adresse secrète au format iCal »
+  // =====================================================================
+  const calFile = path.join(app.getPath('userData'), 'calendar.ics');
+  let calText = null;
+  let calAt = 0;
+  try { calText = fs.readFileSync(calFile, 'utf8'); calAt = fs.statSync(calFile).mtimeMs; } catch {}
+  let calLoading = null;
+
+  async function downloadCal(url) {
+    const res = await fetch(url.trim().replace(/^webcal:/i, 'https:'), { signal: timeout(12000) });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const txt = await res.text();
+    if (!/BEGIN:VCALENDAR/.test(txt)) throw new Error("ce n'est pas une adresse d'agenda iCal");
+    return txt;
+  }
+  async function refreshCal() {
+    if (!ctx.prefs.calUrl) return;
+    calLoading = calLoading || downloadCal(ctx.prefs.calUrl).then((txt) => {
+      calText = txt; calAt = Date.now();
+      fs.promises.writeFile(calFile, txt).catch(() => {});
+    }).finally(() => { calLoading = null; });
+    return calLoading;
+  }
+
+  // { configured, events, stale } — affiche tout de suite la version en cache
+  on('cal:events', async ({ from, to, force } = {}) => {
+    if (!ctx.prefs.calUrl) return { configured: false, events: [] };
+    if (force || !calText) { try { await refreshCal(); } catch (e) { if (!calText) return { configured: true, error: e.message, events: [] }; } }
+    const events = calText ? eventsBetween(calText, from, to) : [];
+    return { configured: true, events, stale: Date.now() - calAt > 10 * 60e3 };
+  });
+  on('cal:set', async ({ url }) => {
+    if (!url || !url.trim()) {
+      delete ctx.prefs.calUrl; calText = null; ctx.savePrefs();
+      try { fs.unlinkSync(calFile); } catch {}
+      return { ok: true, removed: true };
+    }
+    try {
+      const txt = await downloadCal(url);
+      ctx.prefs.calUrl = url.trim(); ctx.savePrefs();
+      calText = txt; calAt = Date.now();
+      fs.promises.writeFile(calFile, txt).catch(() => {});
+      const n = (txt.match(/BEGIN:VEVENT/g) || []).length;
+      return { ok: true, count: n };
+    } catch (e) { return { ok: false, error: e.message }; }
+  });
+  // mise à jour en arrière-plan toutes les 15 minutes (un seul petit téléchargement)
+  setInterval(() => { if (ctx.prefs.calUrl) refreshCal().catch(() => {}); }, 15 * 60e3);
+
+  // Prochain événement (pour la pilule) : en cours, ou à venir dans les 24 h. Calcul gardé 5 min en cache.
+  let nextCache = { at: 0, src: null, list: [] };
+  on('cal:next', async () => {
+    if (!ctx.prefs.calUrl || !calText) return null;
+    const now = Date.now();
+    if (nextCache.src !== calText || now - nextCache.at > 5 * 60e3) {
+      nextCache = { at: now, src: calText, list: eventsBetween(calText, now - 864e5, now + 2 * 864e5) };
+    }
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const cand = nextCache.list.filter((e) => (e.allDay ? e.end > now && e.start < today.getTime() + 2 * 864e5 : e.end > now && e.start < now + 24 * 3600e3));
+    // priorité : événement à heure fixe (en cours ou à venir), sinon journée entière
+    return cand.find((e) => !e.allDay) || cand[0] || null;
+  });
+
+  // ouvrir Google Agenda (jour donné, ou nouvel événement) dans le navigateur
+  on('cal:open', async ({ date, create, title }) => {
+    const d = new Date(date || Date.now());
+    const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    const url = create
+      ? `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title || '')}&dates=${ymd}T180000/${ymd}T190000&ctz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone)}`
+      : `https://calendar.google.com/calendar/r/day/${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+    await shell.openExternal(url);
+    return true;
+  });
+
+  // =====================================================================
+  // Paramètres
+  // =====================================================================
+  const UI_DEFAULTS = { accent: '#b5dca5', bg: '#1f171b', opacity: 100, openOn: 'click', peek: true, hiddenTabs: [], display: 'primary', notifs: true, notifsInGame: false, pillEvent: true };
+  const ui = () => ({ ...UI_DEFAULTS, ...(ctx.prefs.ui || {}) });
+
+  on('notif:status', async () => {
+    try { return await ctx.host.run(`Set-Notif $${ui().notifs !== false}`, 20000); } catch (e) { return 'error: ' + e.message; }
+  });
+  on('notif:open', async () => { await shell.openExternal('ms-settings:privacy-notifications'); return true; });
+
+  on('settings:get', async () => ({
+    ui: ui(),
+    gameMode: ctx.prefs.gameMode !== false,
+    login: ctx.getLogin(),
+    calConnected: !!ctx.prefs.calUrl,
+    city: ctx.prefs.city ? ctx.prefs.city.name : '',
+    autoCity: ctx.prefs.autoLoc ? ctx.prefs.autoLoc.name : '',
+    clipMax: maxClips(),
+    musicApp: ctx.prefs.musicApp || '',
+    apps: mine().map((a) => ({ key: a.key, name: a.name })),
+    screens: ctx.listScreens(),
+  }));
+  on('settings:set', async ({ key, value }) => {
+    switch (key) {
+      case 'ui': ctx.prefs.ui = { ...ui(), ...(value || {}) }; ctx.savePrefs(); ctx.onUiChange(); return true;
+      case 'gameMode': ctx.prefs.gameMode = !!value; ctx.onGameModeChange(); break;
+      case 'login': ctx.setLogin(!!value); break;
+      case 'clipMax': ctx.prefs.clipMax = +value; break;
+      case 'musicApp': ctx.prefs.musicApp = value || ''; break;
+      default: return false;
+    }
+    ctx.savePrefs();
+    return true;
+  });
+
+  // Appli de musique (bouton « Ouvrir … » quand rien ne joue) : choisie dans les paramètres, sinon devinée
+  on('music:app', async () => {
+    const list = mine();
+    let a = list.find((x) => x.key === ctx.prefs.musicApp);
+    if (!a) a = list.find((x) => /deezer|spotify|apple music|tidal|youtube music|soundcloud/i.test(x.name));
+    return a ? { key: a.key, name: a.name } : null;
+  });
+
+  // =====================================================================
+  // Fond d'écran
+  // =====================================================================
+  const thumbCache = new Map();
+  const wallFolder = () => ctx.prefs.wallFolder || app.getPath('pictures');
+
+  on('wall:list', async () => {
+    const folder = wallFolder();
+    let items = [];
+    try {
+      items = fs.readdirSync(folder, { withFileTypes: true })
+        .filter((e) => e.isFile() && /\.(jpe?g|png|bmp)$/i.test(e.name))
+        .map((e) => { const p = path.join(folder, e.name); let t = 0; try { t = fs.statSync(p).mtimeMs; } catch {} return { path: p, name: e.name, t }; })
+        .sort((a, b) => b.t - a.t)
+        .slice(0, 80);
+    } catch {}
+    let current = null;
+    try { current = await ctx.worker.run('Get-Wallpaper'); } catch {}
+    return { folder, folderName: path.basename(folder) || folder, items, current };
+  });
+
+  on('wall:thumbs', async ({ paths }) => {
+    const out = {};
+    for (const p of (paths || []).slice(0, 24)) {
+      if (thumbCache.has(p)) { out[p] = thumbCache.get(p); continue; }
+      let data = null;
+      try { data = (await nativeImage.createThumbnailFromPath(p, { width: 320, height: 200 })).toDataURL(); }
+      catch {
+        try { const img = nativeImage.createFromPath(p); if (!img.isEmpty()) data = img.resize({ width: 320 }).toDataURL({ scaleFactor: 1 }); } catch {}
+      }
+      thumbCache.set(p, data);
+      out[p] = data;
+    }
+    return out;
+  });
+
+  on('wall:set', async ({ path: p }) => {
+    if (!p || !fs.existsSync(p)) return 'notfound';
+    return ctx.worker.run(`Set-Wallpaper '${b64(p)}'`);
+  });
+
+  on('wall:folder', async () => {
+    const r = await dialog.showOpenDialog({ title: 'Dossier de fonds d\'écran', defaultPath: wallFolder(), properties: ['openDirectory'] });
+    if (r.canceled || !r.filePaths[0]) return false;
+    ctx.prefs.wallFolder = r.filePaths[0];
+    ctx.savePrefs();
+    return true;
+  });
+
+  // =====================================================================
+  // Énergie
+  // =====================================================================
+  const run = (cmd, args) => spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  on('power:info', async () => ({ uptime: os.uptime() }));
+  on('power:do', async ({ action }) => {
+    switch (action) {
+      case 'lock': run('rundll32.exe', ['user32.dll,LockWorkStation']); return true;
+      case 'sleep': ctx.worker.run('Invoke-Sleep').catch(() => {}); return true;
+      case 'logoff': run('shutdown.exe', ['/l']); return true;
+      case 'restart': run('shutdown.exe', ['/r', '/t', '0']); return true;
+      case 'shutdown': run('shutdown.exe', ['/s', '/t', '0']); return true;
+      default: return false;
+    }
+  });
+
+  // ---------- point d'entrée unique ----------
+  async function call(name, args) {
+    const fn = handlers[name];
+    if (!fn) throw new Error('fonction inconnue : ' + name);
+    return fn(args || {});
+  }
+  return { call, onClipboardChange, warmup };
+}
+
+module.exports = { setup };

@@ -1,0 +1,49 @@
+{
+  "name": "hub-pilule",
+  "productName": "Hub",
+  "version": "1.0.0",
+  "description": "Hub en haut de l'écran (pilule + panneau Contrôles) pour Windows 11",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis --publish never"
+  },
+  "dependencies": {
+    "@fontsource-variable/rubik": "^5.3.0"
+  },
+  "devDependencies": {
+    "electron": "^44.9.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "fr.celyan.hub",
+    "productName": "Hub",
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json",
+      "node_modules/@fontsource-variable/rubik/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "assets/icon.png"
+    },
+    "asarUnpack": [
+      "src/ps/**"
+    ],
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "artifactName": "Hub-Setup-${version}.${ext}",
+      "shortcutName": "Hub",
+      "uninstallDisplayName": "Hub"
+    },
+    "directories": {
+      "output": "dist"
+    }
+  },
+  "author": "Celyan"
+}
