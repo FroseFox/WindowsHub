@@ -73,31 +73,41 @@ function targetDisplay() {
 // prefs.ui.offset : décalage depuis le bord de l'écran en mode barre des tâches
 const PILL_H = 38;
 const uiPos = () => { const p = prefs.ui && prefs.ui.position; return p === 'tb-left' || p === 'tb-right' ? p : 'top'; };
-function placeWindow(force) {
-  if (!win) return;
-  const d = targetDisplay();
-  if (!force && d.id === currentDisplayId) return;
-  currentDisplayId = d.id;
+function windowBounds(d) {
   const pos = uiPos();
   const b = d.bounds;
-  if (pos === 'top') {
-    win.setBounds({ x: Math.round(b.x + (b.width - WIN_W) / 2), y: b.y, width: WIN_W, height: WIN_H });
-    return;
-  }
+  if (pos === 'top') return { x: Math.round(b.x + (b.width - WIN_W) / 2), y: b.y, width: WIN_W, height: WIN_H };
   // hauteur de la barre des tâches = ce que Windows retire en bas de l'écran (48 px si elle est masquée automatiquement)
   const gap = b.y + b.height - (d.workArea.y + d.workArea.height);
   const tbH = gap >= 24 ? gap : 48;
   const off = Math.max(0, Math.min(b.width - 200, Number(prefs.ui.offset) || 12));
   const y = b.y + b.height - WIN_H - Math.max(0, Math.round((tbH - PILL_H) / 2));
   const x = pos === 'tb-left' ? b.x + off : b.x + b.width - WIN_W - off;
-  win.setBounds({ x: Math.round(x), y: Math.round(y), width: WIN_W, height: WIN_H });
+  return { x: Math.round(x), y: Math.round(y), width: WIN_W, height: WIN_H };
 }
-// Dans la barre des tâches : quand on clique dessus, Windows la remet au premier plan.
-// On repasse devant elle régulièrement (très léger).
+function placeWindow(force) {
+  if (!win) return;
+  const d = targetDisplay();
+  if (!force && d.id === currentDisplayId) return;
+  currentDisplayId = d.id;
+  win.setBounds(windowBounds(d));
+  pushRaise();
+}
+// Dans la barre des tâches : quand on clique dessus, Windows la remet devant tout.
+// PowerShell repasse le hub devant elle chaque seconde, sans jamais déplacer la fenêtre.
+function pushRaise() {
+  if (!host || !win || win.isDestroyed()) return;
+  const h = uiPos() === 'top' ? 0 : (() => { const buf = win.getNativeWindowHandle(); return buf.length >= 8 ? Number(buf.readBigUInt64LE(0)) : buf.readUInt32LE(0); })();
+  host.run(`Set-Raise ${h}`).catch(() => {});
+}
+// si Windows a déplacé la fenêtre (changement d'échelle, barre des tâches…), on la remet à sa place
 setInterval(() => {
-  if (!win || win.isDestroyed() || gameMode || uiPos() === 'top') return;
-  win.moveTop();
-}, 1000);
+  if (!win || win.isDestroyed() || gameMode || panelOpen || mouseOnHub || uiPos() === 'top') return;
+  const want = windowBounds(targetDisplay());
+  const cur = win.getBounds();
+  if (Math.abs(cur.x - want.x) > 1 || Math.abs(cur.y - want.y) > 1) win.setBounds(want);
+}, 2000);
+let mouseOnHub = false;
 function listScreens() {
   const primary = screen.getPrimaryDisplay().id;
   return screen.getAllDisplays().map((d, i) => ({
@@ -356,6 +366,7 @@ async function flushVolume() {
 function setupIpc() {
   ipcMain.on('ui:interactive', (_e, on) => {
     if (!win) return;
+    mouseOnHub = !!on;
     if (gameMode && overPill) return; // en jeu, c'est la surveillance du curseur qui décide
     win.setIgnoreMouseEvents(!on, { forward: true });
   });
@@ -487,7 +498,7 @@ app.whenReady().then(() => {
   loadPrefs();
   const env = { HUB_CACHE: path.join(app.getPath('userData'), 'pscache') };
   host = new PSHost('hub', { script: psScript, mode: 'main', env, onEvent: onHostEvent });
-  host.onReady = () => { watchMode(); pushGameLists(); pushNotif(); };
+  host.onReady = () => { watchMode(); pushGameLists(); pushNotif(); pushRaise(); };
   worker = new PSHost('worker', { script: psScript, mode: 'worker', env, idleMs: 60000 });
 
   feats = features.setup({

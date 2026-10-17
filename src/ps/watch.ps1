@@ -3,7 +3,7 @@
 
 $global:SW = [Diagnostics.Stopwatch]::StartNew()
 $global:W = @{
-    mode = 'closed'; sys = ''; media = ''; fs = $null; clip = [uint32]0
+    mode = 'closed'; sys = ''; media = ''; fs = $null; clip = [uint32]0; raise = [long]0
     est = $null; estAt = 0; wait = 300; errors = 0
     next = @{ media = 0; sys = 0; fs = 0; clip = 0; notif = 0 }
 }
@@ -22,6 +22,9 @@ function global:Set-WatchMode([string]$m) {
     }
     'ok'
 }
+
+# Pilule dans la barre des tâches : numéro de la fenêtre à garder devant (0 = rien à faire)
+function global:Set-Raise([long]$h) { $global:W.raise = $h; 'ok' }
 
 # Renvoie tout l'état (quand l'interface vient de se recharger)
 function global:Force-Emit {
@@ -257,7 +260,11 @@ function global:Watch-Tick {
     $n = $global:W.next
     $now = $global:SW.ElapsedMilliseconds
     if ($now -ge $n.media) { try { Watch-Media } catch { Watch-Error 'musique' $_ }; $n.media = $global:SW.ElapsedMilliseconds + $iv.media }
-    if ($now -ge $n.fs)    { try { Watch-Fs }    catch { Watch-Error 'plein écran' $_ }; $n.fs = $now + $iv.fs }
+    if ($now -ge $n.fs)    {
+        try { Watch-Fs } catch { Watch-Error 'plein écran' $_ }
+        if ($global:W.raise -and $global:W.mode -ne 'game') { try { [HubNative.Win]::Raise($global:W.raise) } catch {} }
+        $n.fs = $now + $iv.fs
+    }
     if ($now -ge $n.clip)  { try { Watch-Clip }  catch { Watch-Error 'presse-papier' $_ }; $n.clip = $now + $iv.clip }
     if ($now -ge $n.sys)   { try { Watch-Sys }   catch { Watch-Error 'système' $_ }; $n.sys = $global:SW.ElapsedMilliseconds + $iv.sys }
     if ($now -ge $n.notif) { try { Watch-Notif } catch { Watch-Error 'notifications' $_ }; $n.notif = $global:SW.ElapsedMilliseconds + $iv.notif }

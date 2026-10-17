@@ -214,6 +214,9 @@ namespace HubNative {
     public static bool SetWallpaper(string path) { return SystemParametersInfo(20, 0, path, 3); }
     [DllImport("user32.dll")] static extern uint GetClipboardSequenceNumber();
     public static uint ClipboardSeq() { return GetClipboardSequenceNumber(); }
+    // repasse la fenêtre du hub devant la barre des tâches, SANS la déplacer ni l'activer
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    public static void Raise(long h) { SetWindowPos(new IntPtr(h), new IntPtr(-1), 0, 0, 0, 0, 0x0213); }
   }
 }
 '@

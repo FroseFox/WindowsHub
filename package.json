@@ -1,7 +1,7 @@
 {
   "name": "hub-pilule",
   "productName": "Hub",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Hub en haut de l'écran (pilule + panneau Contrôles) pour Windows 11",
   "main": "src/main.js",
   "private": true,
