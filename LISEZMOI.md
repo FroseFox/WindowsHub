@@ -27,8 +27,11 @@ Une petite pilule collée en haut au centre de l'écran. Elle affiche la musique
 - **Notifications** : celles de Windows (Discord, mails…) s'affichent quelques secondes dans la pilule, plus un **rappel 10 min avant**
   chaque événement d'agenda et une alerte (avec son) quand le minuteur se termine. Survole une notification pour la garder, clique pour la fermer.
   Windows doit autoriser l'accès : Paramètres Windows → Confidentialité et sécurité → Notifications.
+- **Position** (⚙ Paramètres → Pilule → Position) : **en haut** (par défaut), ou **dans la barre des tâches**, à gauche ou à droite.
+  Dans la barre des tâches, aucune fenêtre ne passe dessous (Windows réserve déjà cette zone) et le panneau s'ouvre vers le haut.
+  Le curseur « Décalage » règle la distance depuis le bord pour la caler dans un espace libre.
 - **Plusieurs écrans** : la pilule va sur l'écran principal, sur un écran choisi, ou suit la souris (⚙ Paramètres → Écran).
-- Icône près de l'horloge Windows : clic droit → lancer au démarrage, recharger, quitter.
+- Icône près de l'horloge Windows : clic droit → lancer au démarrage, recharger, **ouvrir le journal** (`hub.log`, utile si quelque chose ne marche pas), quitter.
 
 ## Les onglets
 La barre d'onglets est en icônes : l'onglet actif affiche son nom, et un indicateur glisse de l'un à l'autre.
@@ -37,6 +40,7 @@ La barre d'onglets est en icônes : l'onglet actif affiche son nom, et un indica
   Avec Google Agenda connecté (⚙ Paramètres) : points sous les jours qui ont des événements, liste du jour, clic sur un événement = l'ouvrir dans Google Agenda, **+** = créer un événement ce jour-là.
 - **Stats** : processeur, mémoire, carte graphique, disque C:, débit réseau (avec courbes), temps allumé ou batterie.
 - **Presse-papier** : historique de ce que tu copies (texte et images). Clic = recopier, épingle = garder, recherche, pause.
+  Si la liste reste vide, une petite ligne en dessous dit ce qui bloque (aucune copie détectée, ou l'erreur de Windows).
 - **Apps** : seulement les applis que tu ajoutes. « Ajouter » → cherche une appli installée ou « Fichier… » pour un .exe / raccourci (jeux hors menu Démarrer). Survol → ✕ pour retirer, glisser-déposer pour réorganiser, recherche + Entrée pour lancer.
 - **Fond d'écran** : les images d'un dossier (Images par défaut, « Changer de dossier » pour choisir), clic = appliquer, « Au hasard ».
 - **Minuteur** : minuteur (1 à 60 min, ajustable) avec anneau de progression, et chrono avec tours (meilleur / pire tour en couleur).

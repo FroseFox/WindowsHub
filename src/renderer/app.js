@@ -170,11 +170,14 @@ function size() {
   wrap.style.width = w + 'px';
   wrap.style.height = h + 'px';
   // zone occupée (sert, en jeu, à savoir si le curseur est sur la pilule)
-  if (api.rect) api.rect({ x: Math.round((window.innerWidth - w) / 2), y: 0, w: Math.round(w), h: Math.round(h) });
+  const pos = document.body.dataset.pos || 'top';
+  const x = pos === 'tb-left' ? 0 : pos === 'tb-right' ? window.innerWidth - w : (window.innerWidth - w) / 2;
+  const y = pos === 'top' ? 0 : window.innerHeight - h;
+  if (api.rect) api.rect({ x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) });
 }
 
 // ---------- Apparence (réglée dans Paramètres) ----------
-let ui = { accent: '#b5dca5', bg: '#1f171b', opacity: 100, openOn: 'click', peek: true, hiddenTabs: [], display: 'primary', notifs: true, notifsInGame: false, pillEvent: true };
+let ui = { accent: '#b5dca5', bg: '#1f171b', opacity: 100, openOn: 'click', peek: true, hiddenTabs: [], display: 'primary', notifs: true, notifsInGame: false, pillEvent: true, position: 'top', offset: 12 };
 let musicApp = null;
 const hexRgb = (h) => { const m = String(h).replace('#', '').match(/^([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i); return m ? m.slice(1).map((x) => parseInt(x, 16)) : [31, 23, 27]; };
 function inkFor(hex) {
@@ -186,6 +189,8 @@ function applyUi(next) {
   const st = document.documentElement.style;
   const [r, g, b] = hexRgb(ui.bg);
   const a = Math.max(0.6, Math.min(1, ui.opacity / 100));
+  const pos = ['tb-left', 'tb-right'].includes(ui.position) ? ui.position : 'top';
+  if (document.body.dataset.pos !== pos) { document.body.dataset.pos = pos; requestAnimationFrame(size); }
   st.setProperty('--on', ui.accent);
   st.setProperty('--on-ink', inkFor(ui.accent));
   st.setProperty('--bg', `rgba(${r}, ${g}, ${b}, ${a})`);

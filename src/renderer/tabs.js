@@ -366,6 +366,7 @@ const hue = (str) => { let h = 0; for (const c of String(str)) h = (h * 31 + c.c
   let items = [];
   let paused = false;
   let flash = null;
+  let diag = null;
 
   function render() {
     const q = search.value.trim().toLowerCase();
@@ -374,7 +375,13 @@ const hue = (str) => { let h = 0; for (const c of String(str)) h = (h * 31 + c.c
       .sort((a, b) => (b.pinned - a.pinned) || (b.t - a.t));
     $('.clip-pause', pane).textContent = paused ? 'Reprendre' : 'Pause';
     if (!shown.length) {
-      list.innerHTML = `<div class="empty">${q ? 'Aucun résultat.' : paused ? "L'historique est en pause." : 'Copie du texte ou une image (Ctrl+C), ça apparaîtra ici.'}</div>`;
+      let why = '';
+      if (!q && !paused && diag) {
+        why = !diag.events
+          ? "Aucune copie détectée depuis le lancement du hub."
+          : `${diag.events} copie${diag.events > 1 ? 's' : ''} détectée${diag.events > 1 ? 's' : ''}, mais rien n'a pu être lu${diag.error ? ' : ' + esc(diag.error) : '.'}`;
+      }
+      list.innerHTML = `<div class="empty">${q ? 'Aucun résultat.' : paused ? "L'historique est en pause." : 'Copie du texte ou une image (Ctrl+C), ça apparaîtra ici.'}${why ? `<small class="clip-diag">${why}</small>` : ''}</div>`;
       resize();
       return;
     }
@@ -411,7 +418,7 @@ const hue = (str) => { let h = 0; for (const c of String(str)) h = (h * 31 + c.c
 
   TABS.clip = {
     async show() {
-      try { const r = await feat('clip:list'); items = r.items || []; paused = r.paused; } catch {}
+      try { const r = await feat('clip:list'); items = r.items || []; paused = r.paused; diag = r.diag || null; } catch (e) { diag = { events: 1, error: 'le hub ne répond pas (' + e.message + ')' }; }
       render();
     },
   };
@@ -846,6 +853,10 @@ const hue = (str) => { let h = 0; for (const c of String(str)) h = (h * 31 + c.c
         ${row('Ouvrir le panneau', '', `<div class="seg"><button class="seg-b ${u.openOn === 'click' ? 'active' : ''}" data-open="click">Au clic</button><button class="seg-b ${u.openOn === 'hover' ? 'active' : ''}" data-open="hover">Au survol</button></div>`)}
         ${row('Aperçu quand la musique change', 'La pilule s\'agrandit 4 secondes', sw(u.peek), 'data-toggle="peek"')}
         ${row('Prochain événement dans la pilule', 'Google Agenda · rappel 10 min avant', sw(u.pillEvent), 'data-toggle="pillEvent"')}
+        ${row('Position', u.position && u.position !== 'top' ? 'Dans la barre des tâches : aucune fenêtre ne passe dessous' : 'En haut, les fenêtres agrandies passent dessous',
+          [['top', 'En haut'], ['tb-left', 'Barre des tâches, à gauche'], ['tb-right', 'À droite']]
+            .map(([k, n]) => `<button class="chip ${(u.position || 'top') === k ? 'on' : ''}" data-position="${k}">${n}</button>`).join(''))}
+        ${u.position && u.position !== 'top' ? row('Décalage depuis le bord', `${u.offset ?? 12} px`, `<input type="range" class="range" min="0" max="900" step="4" value="${u.offset ?? 12}" data-offset>`) : ''}
         ${row('Écran', (st.screens || []).length > 1 ? '' : 'Un seul écran détecté',
           `<button class="chip ${u.display === 'primary' || !u.display ? 'on' : ''}" data-display="primary">Principal</button>`
           + `<button class="chip ${u.display === 'mouse' ? 'on' : ''}" data-display="mouse">Suit la souris</button>`
@@ -905,6 +916,7 @@ const hue = (str) => { let h = 0; for (const c of String(str)) h = (h * 31 + c.c
       hidden.has(k) ? hidden.delete(k) : hidden.add(k);
       await saveUi({ hiddenTabs: [...hidden] }); render();
     }
+    else if ((el = t.closest('[data-position]'))) { await saveUi({ position: el.dataset.position }); render(); }
     else if ((el = t.closest('[data-display]'))) { await saveUi({ display: el.dataset.display }); render(); }
     else if (t.closest('[data-notif-open]')) { feat('notif:open').catch(() => {}); }
     else if (t.closest('[data-notif-retry]')) { notifStatus = null; render(); notifStatus = await feat('notif:status').catch(() => 'error'); render(); }
@@ -945,6 +957,12 @@ const hue = (str) => { let h = 0; for (const c of String(str)) h = (h * 31 + c.c
     else if (e.target.matches('[data-opacity]')) {
       st.ui.opacity = +e.target.value; applyUi(st.ui);
       const sub = e.target.closest('.set-row').querySelector('small'); if (sub) sub.textContent = `${st.ui.opacity} %`;
+    } else if (e.target.matches('[data-offset]')) {
+      st.ui.offset = +e.target.value;
+      const sub = e.target.closest('.set-row').querySelector('small'); if (sub) sub.textContent = `${st.ui.offset} px`;
+      clearTimeout(saveT);
+      saveT = setTimeout(() => set('ui', st.ui), 120); // la pilule se déplace pendant qu'on règle
+      return;
     } else return;
     clearTimeout(saveT);
     saveT = setTimeout(() => set('ui', st.ui), 400);

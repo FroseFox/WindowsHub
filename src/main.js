@@ -17,6 +17,22 @@ app.commandLine.appendSwitch('disable-features', 'HardwareMediaKeyHandling,Media
 
 if (!app.requestSingleInstanceLock()) app.quit();
 
+// ---------- Journal ----------
+// Les messages du hub sont aussi écrits dans %APPDATA%\Hub\hub.log (clic droit sur l'icône → « Ouvrir le journal »).
+const logFile = () => path.join(app.getPath('userData'), 'hub.log');
+(function setupLog() {
+  try { if (fs.statSync(logFile()).size > 512 * 1024) fs.unlinkSync(logFile()); } catch {}
+  const write = (lvl, args) => {
+    const line = `${new Date().toLocaleString('fr-FR')} ${lvl}${args.map((a) => (a instanceof Error ? a.stack : typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ')}\n`;
+    fs.appendFile(logFile(), line, () => {});
+  };
+  for (const [k, lvl] of [['log', ''], ['warn', '[!] '], ['error', '[erreur] ']]) {
+    const orig = console[k].bind(console);
+    console[k] = (...args) => { try { orig(...args); } catch {} write(lvl, args); };
+  }
+  process.on('uncaughtException', (e) => console.error(e));
+})();
+
 let win = null;
 let tray = null;
 let host = null;      // PowerShell principal (commandes + surveillance)
@@ -53,14 +69,35 @@ function targetDisplay() {
   }
   return screen.getPrimaryDisplay();
 }
+// prefs.ui.position : 'top' (en haut au centre), 'tb-left' / 'tb-right' (dans la barre des tâches, à gauche / à droite)
+// prefs.ui.offset : décalage depuis le bord de l'écran en mode barre des tâches
+const PILL_H = 38;
+const uiPos = () => { const p = prefs.ui && prefs.ui.position; return p === 'tb-left' || p === 'tb-right' ? p : 'top'; };
 function placeWindow(force) {
   if (!win) return;
   const d = targetDisplay();
   if (!force && d.id === currentDisplayId) return;
   currentDisplayId = d.id;
-  const x = Math.round(d.bounds.x + (d.bounds.width - WIN_W) / 2);
-  win.setBounds({ x, y: d.bounds.y, width: WIN_W, height: WIN_H });
+  const pos = uiPos();
+  const b = d.bounds;
+  if (pos === 'top') {
+    win.setBounds({ x: Math.round(b.x + (b.width - WIN_W) / 2), y: b.y, width: WIN_W, height: WIN_H });
+    return;
+  }
+  // hauteur de la barre des tâches = ce que Windows retire en bas de l'écran (48 px si elle est masquée automatiquement)
+  const gap = b.y + b.height - (d.workArea.y + d.workArea.height);
+  const tbH = gap >= 24 ? gap : 48;
+  const off = Math.max(0, Math.min(b.width - 200, Number(prefs.ui.offset) || 12));
+  const y = b.y + b.height - WIN_H - Math.max(0, Math.round((tbH - PILL_H) / 2));
+  const x = pos === 'tb-left' ? b.x + off : b.x + b.width - WIN_W - off;
+  win.setBounds({ x: Math.round(x), y: Math.round(y), width: WIN_W, height: WIN_H });
 }
+// Dans la barre des tâches : quand on clique dessus, Windows la remet au premier plan.
+// On repasse devant elle régulièrement (très léger).
+setInterval(() => {
+  if (!win || win.isDestroyed() || gameMode || uiPos() === 'top') return;
+  win.moveTop();
+}, 1000);
 function listScreens() {
   const primary = screen.getPrimaryDisplay().id;
   return screen.getAllDisplays().map((d, i) => ({
@@ -150,7 +187,8 @@ function checkCursorOverPill() {
   const p = screen.getCursorScreenPoint();
   const b = win.getBounds();
   const m = 6;
-  const inside = p.x >= b.x + pillRect.x - m && p.x <= b.x + pillRect.x + pillRect.w + m && p.y >= b.y - m && p.y <= b.y + pillRect.h + m;
+  const top = b.y + (pillRect.y || 0);
+  const inside = p.x >= b.x + pillRect.x - m && p.x <= b.x + pillRect.x + pillRect.w + m && p.y >= top - m && p.y <= top + pillRect.h + m;
   if (inside) {
     overTicks++;
     if (overTicks >= 2 && !overPill) { overPill = true; win.setIgnoreMouseEvents(false); sendGame(); }
@@ -185,7 +223,7 @@ function onHostEvent(ev) {
       if (ev.exe && !SHELL_APPS.test(ev.exe)) lastApp = ev.exe;
       setGame();
       break;
-    case 'clip': if (feats) feats.onClipboardChange(); break;
+    case 'clip': if (feats) feats.onClipboardChange(ev); break;
     case 'notif': {
       const u = prefs.ui || {};
       if (u.notifs === false) break;
@@ -407,6 +445,7 @@ function buildTrayMenu() {
     },
     ...gameMenuItems(),
     { label: 'Recharger', click: () => { if (win) win.reload(); } },
+    { label: 'Ouvrir le journal', click: () => shell.openPath(logFile()) },
     { type: 'separator' },
     { label: 'Quitter', click: () => app.quit() },
   ]);

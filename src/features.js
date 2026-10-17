@@ -206,52 +206,81 @@ function setup(ctx) {
     pushClips();
   }
 
-  // Lecture du presse-papier. Certaines applis annoncent la copie AVANT d'avoir réellement mis le contenu :
-  // si c'est encore vide, on réessaie un peu plus tard.
-  function readClipboard(retry = 3, why = 'windows') {
-    if (ctx.prefs.clipPaused) return;
-    const again = () => { if (retry > 0) setTimeout(() => readClipboard(retry - 1, why), retry === 3 ? 150 : 400); };
-    try {
-      const formats = clipboard.availableFormats();
-      const text = clipboard.readText();
-      if (text && text.trim()) {
-        const sig = 'txt:' + hash(text);
-        if (sig === lastSig) return;
-        lastSig = sig;
-        addClip({ id: crypto.randomUUID(), sig, type: 'text', text: text.slice(0, 20000), t: Date.now(), pinned: false });
-        if (why === 'windows') console.log(`[presse-papier] texte ajouté (${text.length} caractères)`);
-        return;
-      }
-      if (!formats.some((f) => f.startsWith('image/'))) {
-        if (!formats.length) again(); // rien encore : contenu pas prêt
-        return;
-      }
-      const img = clipboard.readImage();
-      if (img.isEmpty()) { again(); return; }
-      const size = img.getSize();
-      const sig = `img:${size.width}x${size.height}:` + hash(img.resize({ width: 32 }).toBitmap());
-      if (sig === lastSig) return;
-      lastSig = sig;
-      const id = crypto.randomUUID();
-      const file = id + '.png';
-      fs.writeFileSync(path.join(clipDir, file), img.toPNG());
-      const thumb = img.resize(size.width > size.height ? { width: 280 } : { height: 160 }).toDataURL();
-      addClip({ id, sig, type: 'image', file, thumb, w: size.width, h: size.height, t: Date.now(), pinned: false });
-      console.log(`[presse-papier] image ajoutée (${size.width}×${size.height})`);
-    } catch (e) {
-      // presse-papier encore verrouillé par l'appli qui vient de copier
-      again();
-    }
+  // Diagnostic affiché dans l'onglet (pour comprendre si quelque chose bloque)
+  const diag = { events: 0, added: 0, lastEvent: 0, lastAdd: 0, error: '' };
+  const logClip = (m) => console.log('[presse-papier] ' + m);
+
+  function addText(text, how) {
+    if (!text || !text.trim()) return false;
+    const sig = 'txt:' + hash(text);
+    if (sig === lastSig) return true;
+    lastSig = sig;
+    addClip({ id: crypto.randomUUID(), sig, type: 'text', text: text.slice(0, 20000), t: Date.now(), pinned: false });
+    diag.added++; diag.lastAdd = Date.now(); diag.error = '';
+    logClip(`texte ajouté (${text.length} caractères, ${how})`);
+    return true;
   }
-  // Windows signale chaque nouvelle copie ; en plus, un contrôle léger toutes les 3 s rattrape ce qui aurait été manqué.
-  const onClipboardChange = () => setTimeout(() => readClipboard(3, 'windows'), 60);
-  setInterval(() => readClipboard(0, 'contrôle'), 3000);
+  function addImage(img, how) {
+    if (!img || img.isEmpty()) return false;
+    const size = img.getSize();
+    const sig = `img:${size.width}x${size.height}:` + hash(img.resize({ width: 32 }).toBitmap());
+    if (sig === lastSig) return true;
+    lastSig = sig;
+    const id = crypto.randomUUID();
+    const file = id + '.png';
+    fs.writeFileSync(path.join(clipDir, file), img.toPNG());
+    const thumb = img.resize(size.width > size.height ? { width: 280 } : { height: 160 }).toDataURL();
+    addClip({ id, sig, type: 'image', file, thumb, w: size.width, h: size.height, t: Date.now(), pinned: false });
+    diag.added++; diag.lastAdd = Date.now(); diag.error = '';
+    logClip(`image ajoutée (${size.width}×${size.height}, ${how})`);
+    return true;
+  }
+
+  // Lecture par le hub lui-même (Electron). Renvoie true si quelque chose a été lu.
+  function readElectron() {
+    try {
+      const text = clipboard.readText();
+      if (addText(text, 'hub')) return true;
+      const formats = clipboard.availableFormats();
+      if (formats.some((f) => f.startsWith('image/'))) return addImage(clipboard.readImage(), 'hub');
+    } catch (e) { diag.error = 'lecture : ' + e.message; }
+    return false;
+  }
+
+  // Image que le hub n'arrive pas à lire : PowerShell l'enregistre en PNG, et on la récupère
+  async function imageViaPs() {
+    const tmp = path.join(clipDir, 'pending.png');
+    try {
+      const ok = await ctx.host.run(`Save-ClipImage '${b64(tmp)}'`, 8000);
+      if (ok === true || ok === 'True') { addImage(nativeImage.createFromPath(tmp), 'powershell'); }
+    } catch (e) { diag.error = 'image : ' + e.message; }
+    try { fs.unlinkSync(tmp); } catch {}
+  }
+
+  // Appelé à chaque copie. ev = ce que PowerShell a lu ({ text, img, err }).
+  function onClipboardChange(ev) {
+    diag.events++; diag.lastEvent = Date.now();
+    if (ctx.prefs.clipPaused) return;
+    ev = ev || {};
+    if (ev.err) diag.error = 'Windows : ' + ev.err;
+    if (typeof ev.text === 'string' && addText(ev.text, 'powershell')) return;
+    // pas de texte côté PowerShell : on essaie nous-mêmes (avec 3 nouvelles tentatives si le contenu n'est pas prêt)
+    let tries = 0;
+    const attempt = () => {
+      if (readElectron()) return;
+      if (++tries < 4) { setTimeout(attempt, tries * 150); return; }
+      if (ev.img) imageViaPs();
+    };
+    setTimeout(attempt, 30);
+  }
+  // Contrôle léger toutes les 3 s : rattrape une copie manquée (si la surveillance Windows était en pause, etc.)
+  setInterval(() => { if (!ctx.prefs.clipPaused) readElectron(); }, 3000);
   setTimeout(() => {
     // au démarrage : on mémorise le contenu actuel sans l'ajouter (évite de re-ajouter la même chose)
     try { const t = clipboard.readText(); if (t) lastSig = 'txt:' + hash(t); } catch {}
   }, 0);
 
-  on('clip:list', async () => ({ items: clips, paused: !!ctx.prefs.clipPaused }));
+  on('clip:list', async () => ({ items: clips, paused: !!ctx.prefs.clipPaused, diag: { ...diag, now: Date.now() } }));
   on('clip:copy', async ({ id }) => {
     const c = clips.find((x) => x.id === id);
     if (!c) return false;
@@ -569,7 +598,7 @@ function setup(ctx) {
   // =====================================================================
   // Paramètres
   // =====================================================================
-  const UI_DEFAULTS = { accent: '#b5dca5', bg: '#1f171b', opacity: 100, openOn: 'click', peek: true, hiddenTabs: [], display: 'primary', notifs: true, notifsInGame: false, pillEvent: true };
+  const UI_DEFAULTS = { accent: '#b5dca5', bg: '#1f171b', opacity: 100, openOn: 'click', peek: true, hiddenTabs: [], display: 'primary', notifs: true, notifsInGame: false, pillEvent: true, position: 'top', offset: 12 };
   const ui = () => ({ ...UI_DEFAULTS, ...(ctx.prefs.ui || {}) });
 
   on('notif:status', async () => {

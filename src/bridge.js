@@ -27,7 +27,7 @@ class PSHost {
     this.ready = false;
     const proc = spawn(
       'powershell.exe',
-      ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', this.script, '-Mode', this.mode],
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', this.script, '-Mode', this.mode],
       { windowsHide: true, env: { ...process.env, ...this.env } }
     );
     this.proc = proc;

@@ -1016,3 +1016,18 @@ svg { display: block; }
 .pchip { max-width: 210px; }
 /* chrono : l'anneau suit chaque image, sans transition qui le ferait traîner */
 .tm-ring.sw .fgc { transition: stroke 0.3s; }
+
+/* ---------- Position : dans la barre des tâches (le panneau s'ouvre vers le haut) ---------- */
+body[data-pos^='tb'] #wrap { top: auto; bottom: 0; }
+body[data-pos='tb-left'] #wrap { left: 0; transform: none; }
+body[data-pos='tb-right'] #wrap { left: auto; right: 0; transform: none; }
+body[data-pos^='tb'] .ear { display: none; }
+body[data-pos^='tb'] .shape {
+  border-radius: var(--r);
+  box-shadow: 0 -14px 40px -16px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  transform-origin: 50% 100%;
+}
+body[data-pos^='tb'] .layer { top: auto; bottom: 0; transform-origin: 50% 100%; }
+body[data-pos^='tb'] .inner { top: auto; bottom: 0; }
+body[data-pos^='tb'] .open-inner { padding: 14px 16px 14px; }
+.clip-diag { display: block; margin-top: 6px; font-size: 11px; color: var(--muted); opacity: 0.8; }

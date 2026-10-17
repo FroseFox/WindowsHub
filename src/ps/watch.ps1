@@ -149,13 +149,48 @@ function global:Watch-Fs {
     }
 }
 
+# ---- Presse-papier ----
+# Windows incrémente un compteur à chaque copie. Quand il change, on lit le texte ICI (PowerShell),
+# et on l'envoie avec l'événement : le hub n'a plus besoin de réussir à le lire lui-même.
+$global:ClipForms = $false
+function global:Read-ClipNow {
+    if (-not $global:ClipForms) { Add-Type -AssemblyName System.Windows.Forms; $global:ClipForms = $true }
+    $r = [ordered]@{ type = 'clip'; text = $null; img = $false; err = $null }
+    for ($i = 0; $i -lt 4; $i++) {
+        try {
+            if ([System.Windows.Forms.Clipboard]::ContainsText()) {
+                $t = [System.Windows.Forms.Clipboard]::GetText()
+                if ($t.Length -gt 20000) { $t = $t.Substring(0, 20000) }
+                $r.text = $t
+            } elseif ([System.Windows.Forms.Clipboard]::ContainsImage()) { $r.img = $true }
+            $r.err = $null
+            break
+        } catch { $r.err = $_.Exception.Message; Start-Sleep -Milliseconds 80 }
+    }
+    $r
+}
 function global:Watch-Clip {
     $q = [HubNative.Win]::ClipboardSeq()
     if ($q -ne $global:W.clip) {
         $first = ($global:W.clip -eq 0)
         $global:W.clip = $q
-        if (-not $first) { Emit '@E {"type":"clip"}' }
+        if (-not $first) {
+            # laisse à l'appli le temps de finir de copier
+            Start-Sleep -Milliseconds 40
+            $r = Read-ClipNow
+            Emit ('@E ' + (ConvertTo-Json -Compress -InputObject $r))
+        }
     }
+}
+# Sauvegarde l'image du presse-papier en PNG (secours si le hub n'arrive pas à la lire)
+function global:Save-ClipImage([string]$b64path) {
+    if (-not $global:ClipForms) { Add-Type -AssemblyName System.Windows.Forms; $global:ClipForms = $true }
+    Add-Type -AssemblyName System.Drawing
+    $img = [System.Windows.Forms.Clipboard]::GetImage()
+    if (-not $img) { return $false }
+    $img.Save((FromB64 $b64path), [System.Drawing.Imaging.ImageFormat]::Png)
+    $img.Dispose()
+    $true
 }
 
 # ---- Notifications Windows (Discord, mails, etc.) ----
