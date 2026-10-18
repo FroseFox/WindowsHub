@@ -16,8 +16,9 @@ Une petite pilule collée en haut au centre de l'écran. Elle affiche la musique
 - Quand le morceau change, la pilule s'agrandit 4 secondes pour l'afficher.
 - **Ctrl + Alt + Espace** ouvre/ferme le panneau.
 - **Mode jeu** : quand un **jeu** est au premier plan (pas Chrome, Discord… même en plein écran), la pilule laisse passer
-  les clics — sauf quand **ton curseur est dessus** : en pleine partie il reste au centre de l'écran, donc si tu l'amènes
-  sur la pilule c'est que tu es dans un menu, et elle redevient cliquable. Ctrl + Alt + Espace marche toujours.
+  les clics. Elle redevient cliquable seulement si tu es dans un menu : souris visible posée dessus, ou souris
+  immobile 1 seconde dessus. Quand tu vises vers le haut (curseur caché collé au bord de l'écran), elle reste verrouillée,
+  donc un tir ne peut pas l'ouvrir. Ctrl + Alt + Espace marche toujours.
   Les jeux sont reconnus grâce à la liste de Windows (Game Bar), aux dossiers Steam / Riot / Epic / Xbox / EA / Ubisoft / GOG, et au plein écran exclusif.
   Si un programme est mal reconnu : clic droit sur l'icône du hub → « nom.exe » → « C'est un jeu » / « Ce n'est pas un jeu ».
   Le mode jeu se désactive aussi depuis ce menu.

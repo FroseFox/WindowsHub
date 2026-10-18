@@ -190,8 +190,25 @@ const SHELL_APPS = /^(explorer|shellexperiencehost|searchhost|startmenuexperienc
 // c'est que tu es dans un menu -> la pilule devient cliquable.
 let pillRect = null;      // zone de la pilule / du panneau, relative à la fenêtre
 let overPill = false;
-let overTicks = 0;
 let gameTimer = null;
+// Pour éviter qu'un tir n'ouvre la pilule quand le curseur (caché) reste collé en haut pendant que tu vises :
+//  - souris VISIBLE (menu du jeu) -> la pilule devient cliquable presque tout de suite ;
+//  - souris CACHÉE (en pleine partie) -> seulement si elle reste immobile 1 s sur la pilule,
+//    et jamais quand elle est collée au bord de l'écran (c'est ce qui arrive quand tu vises vers le haut).
+let overSince = 0, stillSince = 0, lastP = null, cursorVis = null, visAsked = 0;
+function askCursorVisible() {
+  visAsked = Date.now();
+  if (!host) return;
+  host.run('[HubWatch.Screen]::CursorVisible()', 1500)
+    .then((v) => { if (overSince) cursorVis = v === true || v === 'True'; })
+    .catch(() => {});
+}
+function unlockPill(why) {
+  overPill = true;
+  win.setIgnoreMouseEvents(false);
+  sendGame();
+  console.log(`[jeu] pilule cliquable (${why})`);
+}
 function checkCursorOverPill() {
   if (!win || !pillRect) return;
   const p = screen.getCursorScreenPoint();
@@ -199,13 +216,22 @@ function checkCursorOverPill() {
   const m = 6;
   const top = b.y + (pillRect.y || 0);
   const inside = p.x >= b.x + pillRect.x - m && p.x <= b.x + pillRect.x + pillRect.w + m && p.y >= top - m && p.y <= top + pillRect.h + m;
-  if (inside) {
-    overTicks++;
-    if (overTicks >= 2 && !overPill) { overPill = true; win.setIgnoreMouseEvents(false); sendGame(); }
-  } else {
-    overTicks = 0;
+  if (!inside) {
+    overSince = 0; cursorVis = null;
     if (overPill) { overPill = false; win.setIgnoreMouseEvents(true, { forward: true }); sendGame(); }
+    return;
   }
+  const now = Date.now();
+  if (!overSince) { overSince = now; stillSince = now; lastP = p; cursorVis = null; askCursorVisible(); }
+  if (Math.abs(p.x - lastP.x) + Math.abs(p.y - lastP.y) > 4) stillSince = now; // elle bouge encore
+  lastP = p;
+  if (overPill) return;
+  if (now - visAsked > 400) askCursorVisible();
+  const d = screen.getDisplayNearestPoint(p).bounds;
+  const atEdge = p.y <= d.y + 1 || p.y >= d.y + d.height - 2;
+  const dwell = now - overSince;
+  if (cursorVis === true && dwell >= 150) unlockPill('souris visible');
+  else if (!atEdge && now - stillSince >= 1000) unlockPill('souris immobile sur la pilule');
 }
 function sendGame() {
   // lock = la pilule laisse passer les clics (en jeu, quand le curseur n'est pas sur la pilule)
@@ -216,7 +242,7 @@ function setGame() {
   const changed = g !== gameMode;
   gameMode = g;
   if (g && !gameTimer) gameTimer = setInterval(checkCursorOverPill, 100);
-  if (!g && gameTimer) { clearInterval(gameTimer); gameTimer = null; overPill = false; overTicks = 0; }
+  if (!g && gameTimer) { clearInterval(gameTimer); gameTimer = null; overPill = false; overSince = 0; }
   sendGame();
   if (changed) watchMode();
 }
@@ -228,6 +254,7 @@ function onHostEvent(ev) {
     case 'sys': lastSys = ev.data; send('sys:state', ev.data); break;
     case 'media': handleMedia(ev); break;
     case 'game':
+      if (!!ev.game !== inGame) console.log(`[jeu] ${ev.game ? 'en jeu' : 'hors jeu'} : ${ev.exe || '?'}`);
       inGame = !!ev.game;
       cursorShown = ev.cursor !== false;
       if (ev.exe && !SHELL_APPS.test(ev.exe)) lastApp = ev.exe;
