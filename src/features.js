@@ -637,6 +637,8 @@ function setup(ctx) {
     musicApp: ctx.prefs.musicApp || '',
     apps: mine().map((a) => ({ key: a.key, name: a.name })),
     screens: ctx.listScreens(),
+    engine: ctx.prefs.engine === 'powershell' ? 'powershell' : 'auto',
+    engineNow: ctx.host ? ctx.host.engine : 'powershell',
   }));
   on('settings:set', async ({ key, value }) => {
     switch (key) {
@@ -645,6 +647,7 @@ function setup(ctx) {
       case 'login': ctx.setLogin(!!value); break;
       case 'clipMax': ctx.prefs.clipMax = +value; break;
       case 'musicApp': ctx.prefs.musicApp = value || ''; break;
+      case 'engine': ctx.prefs.engine = value === 'powershell' ? 'powershell' : 'auto'; break; // pris en compte au prochain lancement
       default: return false;
     }
     ctx.savePrefs();
@@ -868,6 +871,47 @@ function setup(ctx) {
       default: return false;
     }
   });
+
+  // ---------- Mélangeur de son ----------
+  const mixIcons = new Map();
+  async function exeIcon(p) {
+    if (!p) return null;
+    if (mixIcons.has(p)) return mixIcons.get(p);
+    let d = null;
+    try { const img = await app.getFileIcon(p, { size: 'normal' }); if (!img.isEmpty()) d = img.toDataURL(); } catch {}
+    mixIcons.set(p, d);
+    return d;
+  }
+  on('mix:list', async () => {
+    const r = await ctx.host.run('Get-Mixer', 8000);
+    if (!r || !r.ok) return { ok: false };
+    const items = Array.isArray(r.items) ? r.items : r.items ? [r.items] : [];
+    // les applis qui jouent du son d'abord, puis par nom ; « Sons système » à la fin
+    items.sort((a, b) => (a.key === 'system') - (b.key === 'system') || (b.active - a.active) || a.name.localeCompare(b.name));
+    await Promise.all(items.map(async (it) => { it.icon = await exeIcon(it.path); }));
+    return { ok: true, items, mic: r.mic || null };
+  });
+  // volume pendant qu'on glisse : on n'envoie que la dernière valeur
+  const mixPending = new Map();
+  let mixBusy = false;
+  async function mixFlush() {
+    if (mixBusy) return;
+    mixBusy = true;
+    while (mixPending.size) {
+      const [key, v] = mixPending.entries().next().value;
+      mixPending.delete(key);
+      try { await ctx.host.run(`Set-MixerVolume '${b64(key)}' ${(v / 100).toFixed(3)}`, 4000); } catch {}
+    }
+    mixBusy = false;
+  }
+  on('mix:volume', async ({ key, vol }) => { mixPending.set(String(key), Math.max(0, Math.min(100, +vol || 0))); mixFlush(); return true; });
+  on('mix:mute', async ({ key, mute }) => ctx.host.run(`Set-MixerMute '${b64(key)}' $${!!mute}`, 4000));
+  on('mic:mute', async ({ mute }) => ctx.host.run(`Set-MicMute $${!!mute}`, 4000));
+
+  // ---------- Mises à jour ----------
+  on('update:status', async () => (ctx.updater ? ctx.updater.status() : { state: 'norepo' }));
+  on('update:check', async () => (ctx.updater ? ctx.updater.check(true) : { state: 'norepo' }));
+  on('update:install', async () => (ctx.updater ? ctx.updater.install() : { ok: false }));
 
   // ---------- point d'entrée unique ----------
   async function call(name, args) {

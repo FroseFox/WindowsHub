@@ -69,6 +69,10 @@ Tes réglages (applis, couleurs, agenda…) sont gardés : la version installée
 ---
 
 ## Publier une nouvelle version plus tard
+> Depuis la 1.3.0, si ton dépôt est **public**, tu n'as plus besoin de télécharger le .exe : le hub voit la nouvelle
+> Release tout seul et te propose de l'installer d'un clic. (Dépôt → Settings → tout en bas → Change visibility → Make public.)
+> Le nom du tag doit commencer par un chiffre ou un v : `v1.3.1` ou `1.3.1`.
+
 1. Remplace les fichiers modifiés dans le dossier (par ex. le dossier `src`).
 2. GitHub Desktop : écris un résumé en bas à gauche → **Commit to main** → **Push origin**.
 3. Sur github.com → **Releases** → **Draft a new release** → nouveau tag (`v1.0.1`, `v1.1.0`…) → **Publish release**.

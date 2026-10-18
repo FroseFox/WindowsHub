@@ -29,6 +29,53 @@ jobs:
       - name: Installer les dépendances
         run: npm install
 
+      # Moteur compilé (remplace PowerShell). S'il ne se construit pas ou échoue au test,
+      # l'installateur est quand même créé : le hub utilisera PowerShell.
+      - name: Construire le moteur compilé (hubhelper.exe)
+        id: helper
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          dotnet build helper/hubhelper.csproj -c Release -o src/helper
+          if (-not (Test-Path src/helper/hubhelper.exe)) { throw 'hubhelper.exe absent' }
+          Get-ChildItem src/helper | Format-Table Name, Length
+
+      - name: Tester le moteur compilé
+        if: steps.helper.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          function Test-Helper([string]$mode, [string[]]$cmds, [int]$waitMs) {
+            $psi = [Diagnostics.ProcessStartInfo]::new((Resolve-Path 'src/helper/hubhelper.exe').Path, "-Mode $mode")
+            $psi.UseShellExecute = $false; $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+            $p = [Diagnostics.Process]::Start($psi)
+            $outTask = $p.StandardOutput.ReadToEndAsync(); $errTask = $p.StandardError.ReadToEndAsync()
+            $i = 0
+            foreach ($c in $cmds) { $i++; $p.StandardInput.WriteLine("$i " + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($c))) }
+            Start-Sleep -Milliseconds $waitMs
+            $p.StandardInput.Close()
+            if (-not $p.WaitForExit(30000)) { $p.Kill(); throw "le moteur ($mode) ne s'arrête pas" }
+            $out = $outTask.Result; $err = $errTask.Result
+            Write-Host "---- $mode : sortie ----"; ($out -split "`n") | ForEach-Object { if ($_.Length -gt 240) { $_.Substring(0, 240) + '…' } else { $_ } } | Write-Host
+            Write-Host "---- $mode : erreurs ----"; Write-Host $err
+            if ($out -notmatch '@READY') { throw "pas de @READY ($mode)" }
+            if ($out -notmatch '@R 1 "pong"') { throw "pas de réponse à Ping ($mode)" }
+            return $out
+          }
+          try {
+            $w = Test-Helper 'worker' @('Ping', 'Get-NetBytes', 'Get-Stats', 'Get-HubState', 'Get-AudioOutputs', 'Get-AppsList', 'Get-Wallpaper', 'Commande-Bidon') 3000
+            if ($w -notmatch '@R 2 \{"rx":') { throw 'Get-NetBytes ne répond pas correctement' }
+            if ($w -notmatch '@R 6 \{"ok":true') { throw 'Get-AppsList ne répond pas correctement' }
+            if ($w -notmatch '@R 8 \{"__error":') { throw 'les commandes inconnues ne sont pas signalées' }
+            $m = Test-Helper 'main' @('Ping', "Set-WatchMode 'open'", 'Force-Emit', 'Get-CursorVisible', 'Set-Notif $false') 4000
+            if ($m -notmatch '@E \{"type":"sys"') { throw "pas d'événement système" }
+            Write-Host 'Moteur compilé OK'
+          } catch {
+            Write-Host "::warning::Moteur compilé refusé ($($_.Exception.Message)) : l'installateur utilisera PowerShell"
+            Remove-Item -Recurse -Force src/helper -ErrorAction SilentlyContinue
+            exit 1
+          }
+
       - name: Construire l'installateur
         run: npm run dist
 

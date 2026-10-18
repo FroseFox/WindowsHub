@@ -1,9 +1,10 @@
 {
   "name": "hub-pilule",
   "productName": "Hub",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "Hub en haut de l'écran (pilule + panneau Contrôles) pour Windows 11",
   "main": "src/main.js",
+  "updateRepo": "FroseFox/WindowsHub",
   "private": true,
   "scripts": {
     "start": "electron .",
@@ -32,7 +33,9 @@
       "icon": "assets/icon.png"
     },
     "asarUnpack": [
-      "src/ps/**"
+      "src/ps/**",
+      "src/native/**",
+      "src/helper/**"
     ],
     "nsis": {
       "oneClick": true,

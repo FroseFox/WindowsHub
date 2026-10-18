@@ -33,6 +33,10 @@ function global:Safe([scriptblock]$block) {
     try { & $block } catch { $null }
 }
 
+# Code C# partagé avec le moteur compilé (src/native/*.cs)
+$global:NativeDir = Join-Path (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)) 'native'
+function global:Get-NativeSource([string]$name) { [IO.File]::ReadAllText((Join-Path $global:NativeDir "$name.cs")) }
+
 # Compile le code C# une seule fois puis réutilise la DLL (démarrage beaucoup plus rapide).
 function global:Add-CachedType([string]$name, [string]$src, [string[]]$refs = @()) {
     $dir = if ($env:HUB_CACHE) { $env:HUB_CACHE } else { Join-Path $env:TEMP 'hub-pilule' }

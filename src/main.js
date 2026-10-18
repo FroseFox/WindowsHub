@@ -1,9 +1,11 @@
-const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage, shell, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage, shell, globalShortcut, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { PSHost } = require('./bridge');
 const features = require('./features');
+const updaterLib = require('./updater');
+let updater = null;
 
 const WIN_W = 760;
 const WIN_H = 600;
@@ -46,15 +48,46 @@ let lastApp = '';          // dernier programme au premier plan (pour le menu de
 
 // Les scripts PowerShell doivent être hors de l'archive .asar une fois l'appli empaquetée
 const psScript = path.join(__dirname, 'ps', 'host.ps1').replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
+// Moteur compilé (construit par GitHub) : utilisé s'il est présent, sauf si tu choisis PowerShell dans les paramètres
+const helperExe = path.join(__dirname, 'helper', 'hubhelper.exe').replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
+const pickHelper = () => (prefs.engine !== 'powershell' && process.platform === 'win32' && fs.existsSync(helperExe) ? helperExe : null);
 
 // ---------- Préférences ----------
 const prefsFile = () => path.join(app.getPath('userData'), 'prefs.json');
 let prefs = { gameMode: true };
-function loadPrefs() { try { prefs = { ...prefs, ...JSON.parse(fs.readFileSync(prefsFile(), 'utf8')) }; } catch {} }
+// Secrets (adresse secrète Google Agenda, clé API Valorant) : chiffrés sur le disque avec ton compte Windows
+// (même protection que les mots de passe de Chrome). En mémoire, le hub les garde en clair.
+const SECRETS = [['calUrl'], ['valo', 'key']];
+const canCrypt = () => { try { return safeStorage.isEncryptionAvailable(); } catch { return false; } };
+function getPath(o, keys) { return keys.reduce((x, k) => (x && typeof x === 'object' ? x[k] : undefined), o); }
+function setPath(o, keys, v) { const last = keys[keys.length - 1]; const parent = keys.slice(0, -1).reduce((x, k) => x[k] || (x[k] = {}), o); parent[last] = v; }
+function loadPrefs() {
+  try { prefs = { ...prefs, ...JSON.parse(fs.readFileSync(prefsFile(), 'utf8')) }; } catch {}
+  let plain = false;
+  for (const keys of SECRETS) {
+    const v = getPath(prefs, keys);
+    if (v && typeof v === 'object' && v.$enc) {
+      try { setPath(prefs, keys, safeStorage.decryptString(Buffer.from(v.$enc, 'base64'))); }
+      catch (e) { console.error('[secrets] impossible de déchiffrer', keys.join('.'), e.message); setPath(prefs, keys, ''); }
+    } else if (typeof v === 'string' && v) plain = true;
+  }
+  if (plain && canCrypt()) savePrefs(); // ancien fichier en clair : on le réécrit chiffré
+}
 let prefsT = null;
 function savePrefs() {
   clearTimeout(prefsT);
-  prefsT = setTimeout(() => { try { fs.writeFileSync(prefsFile(), JSON.stringify(prefs)); } catch {} }, 400);
+  prefsT = setTimeout(() => {
+    try {
+      const out = JSON.parse(JSON.stringify(prefs));
+      if (canCrypt()) {
+        for (const keys of SECRETS) {
+          const v = getPath(out, keys);
+          if (typeof v === 'string' && v) setPath(out, keys, { $enc: safeStorage.encryptString(v).toString('base64') });
+        }
+      }
+      fs.writeFileSync(prefsFile(), JSON.stringify(out));
+    } catch (e) { console.error('[préférences]', e.message); }
+  }, 400);
 }
 
 // ---------- Fenêtre et écrans ----------
@@ -199,7 +232,7 @@ let overSince = 0, stillSince = 0, lastP = null, cursorVis = null, visAsked = 0;
 function askCursorVisible() {
   visAsked = Date.now();
   if (!host) return;
-  host.run('[HubWatch.Screen]::CursorVisible()', 1500)
+  host.run('Get-CursorVisible', 1500)
     .then((v) => { if (overSince) cursorVis = v === true || v === 'True'; })
     .catch(() => {});
 }
@@ -353,7 +386,7 @@ const b64 = (s) => Buffer.from(String(s ?? ''), 'utf8').toString('base64');
 const SYS_ACTIONS = {
   wifi: (v) => `Set-Radio 'WiFi' $${!!v}`,
   bt: (v) => `Set-Radio 'Bluetooth' $${!!v}`,
-  mute: (v) => `[HubNative.Audio]::SetMute($${!!v}); 'ok'`,
+  mute: (v) => `Set-Mute $${!!v}`,
   dark: (v) => `Set-DarkMode $${!!v}`,
   night: (v) => `Set-NightLight $${!!v}`,
 };
@@ -385,7 +418,7 @@ async function flushVolume() {
   volBusy = true;
   const v = Math.max(0, Math.min(100, Number(volPending) || 0));
   volPending = null;
-  try { await host.run(`[HubNative.Audio]::SetVolume(${(v / 100).toFixed(3)}); 'ok'`); } catch (e) { console.error('[vol]', e.message); }
+  try { await host.run(`Set-Volume ${(v / 100).toFixed(3)}`); } catch (e) { console.error('[vol]', e.message); }
   volBusy = false;
   flushVolume();
 }
@@ -472,6 +505,7 @@ function buildTrayMenu() {
   const auto = app.getLoginItemSettings(loginSettings(false)).openAtLogin;
   return Menu.buildFromTemplate([
     { label: 'Ouvrir le panneau   (Ctrl+Alt+Espace)', click: () => send('ui:toggle') },
+    ...(updater && updater.status().state === 'ready' ? [{ label: `Installer la mise à jour ${updater.status().latest}`, click: () => updater.install() }] : []),
     { type: 'separator' },
     {
       label: 'Lancer au démarrage de Windows', type: 'checkbox', checked: auto,
@@ -519,17 +553,26 @@ function createTray() {
   tray.on('click', () => send('ui:toggle'));
   tray.on('right-click', () => tray.setContextMenu(buildTrayMenu()));
 }
+function refreshTray() { if (tray) tray.setContextMenu(buildTrayMenu()); }
 
 // ---------- Démarrage ----------
 app.whenReady().then(() => {
   loadPrefs();
   const env = { HUB_CACHE: path.join(app.getPath('userData'), 'pscache') };
-  host = new PSHost('hub', { script: psScript, mode: 'main', env, onEvent: onHostEvent });
+  host = new PSHost('hub', { script: psScript, helper: pickHelper(), mode: 'main', env, onEvent: onHostEvent });
   host.onReady = () => { watchMode(); pushGameLists(); pushNotif(); pushRaise(); };
-  worker = new PSHost('worker', { script: psScript, mode: 'worker', env, idleMs: 60000 });
+  worker = new PSHost('worker', { script: psScript, helper: pickHelper(), mode: 'worker', env, idleMs: 60000 });
+  console.log(`[moteur] ${host.engine === 'helper' ? 'compilé (hubhelper.exe)' : 'PowerShell'}`);
 
+  updater = updaterLib.create({
+    isBusy: () => gameMode,
+    onReady: (st, manual) => {
+      refreshTray();
+      if (!manual) send('notif', { app: 'Hub', title: `Mise à jour ${st.latest} prête`, body: 'Clique ici pour l\'installer (10 secondes)', action: 'update' });
+    },
+  });
   feats = features.setup({
-    send, prefs, savePrefs, worker,
+    send, prefs, savePrefs, worker, updater,
     getLogin: () => app.getLoginItemSettings(loginSettings(false)).openAtLogin,
     setLogin: (v) => app.setLoginItemSettings(loginSettings(v)),
     onGameModeChange: () => setGame(),

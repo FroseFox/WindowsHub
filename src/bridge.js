@@ -4,10 +4,16 @@
 // - idleMs : arrête le processus après un temps sans commande (relancé tout seul au besoin)
 const { spawn } = require('child_process');
 
+// Moteur : 'helper' (programme compilé hubhelper.exe, rapide et léger) ou 'powershell' (secours).
+// Si le moteur compilé ne démarre pas ou plante deux fois de suite, on repasse sur PowerShell tout seul.
+let helperBroken = false;
+
 class PSHost {
-  constructor(name, { script, mode = 'main', env = {}, idleMs = 0, onEvent = null } = {}) {
+  constructor(name, { script, helper = null, mode = 'main', env = {}, idleMs = 0, onEvent = null } = {}) {
     this.name = name;
     this.script = script;
+    this.helper = helper;         // chemin de hubhelper.exe (ou null)
+    this.helperFails = 0;
     this.mode = mode;
     this.env = env;
     this.idleMs = idleMs;
@@ -22,15 +28,28 @@ class PSHost {
     if (!idleMs) this._start();
   }
 
+  get engine() { return this.helper && !helperBroken ? 'helper' : 'powershell'; }
+
   _start() {
     this.buffer = '';
     this.ready = false;
-    const proc = spawn(
-      'powershell.exe',
-      ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', this.script, '-Mode', this.mode],
-      { windowsHide: true, env: { ...process.env, ...this.env } }
-    );
+    const useHelper = this.engine === 'helper';
+    const proc = useHelper
+      ? spawn(this.helper, ['-Mode', this.mode], { windowsHide: true, env: { ...process.env, ...this.env } })
+      : spawn(
+        'powershell.exe',
+        ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', this.script, '-Mode', this.mode],
+        { windowsHide: true, env: { ...process.env, ...this.env } }
+      );
     this.proc = proc;
+    proc.useHelper = useHelper;
+    proc.startedAt = Date.now();
+    // le moteur compilé doit répondre « prêt » en quelques secondes, sinon on bascule sur PowerShell
+    if (useHelper) {
+      proc.readyTimer = setTimeout(() => {
+        if (this.proc === proc && !this.ready) { console.error(`[moteur:${this.name}] pas de réponse du moteur compilé`); this._helperFailed(proc); }
+      }, 8000);
+    }
     proc.stdout.setEncoding('utf8');
     proc.stdout.on('data', (d) => this._data(d));
     // la même erreur n'est écrite qu'une fois toutes les 10 minutes (évite de remplir le journal)
@@ -41,12 +60,22 @@ class PSHost {
         if (t && Date.now() - t < 10 * 60e3) continue;
         seen.set(msg, Date.now());
         if (seen.size > 200) seen.delete(seen.keys().next().value);
-        console.error(`[ps:${this.name}]`, msg);
+        console.error(`[${proc.useHelper ? 'moteur' : 'ps'}:${this.name}]`, msg);
       }
     });
     proc.stdin.on('error', () => {});
-    proc.on('error', (e) => console.error(`[ps:${this.name}] impossible de lancer PowerShell`, e.message));
-    proc.on('exit', () => {
+    proc.on('error', (e) => {
+      console.error(`[${proc.useHelper ? 'moteur' : 'ps'}:${this.name}] impossible de lancer`, e.message);
+      if (proc.useHelper && this.proc === proc) this._helperFailed(proc);
+    });
+    proc.on('exit', (code) => {
+      clearTimeout(proc.readyTimer);
+      // moteur compilé arrêté juste après son lancement : on compte un échec
+      if (proc.useHelper && this.proc === proc && !this.stopped && (!this.ready || Date.now() - proc.startedAt < 15000)) {
+        console.error(`[moteur:${this.name}] arrêté (code ${code})`);
+        this.helperFails++;
+        if (this.helperFails >= 2) this._switchToPowerShell();
+      }
       if (this.proc !== proc) return;
       this.proc = null;
       for (const [, job] of this.jobs) { clearTimeout(job.timer); job.reject(new Error('PowerShell fermé')); }
@@ -85,6 +114,7 @@ class PSHost {
       this._armIdle();
     } else if (line === '@READY') {
       this.ready = true;
+      if (this.proc) clearTimeout(this.proc.readyTimer);
       if (this.onReady) this.onReady();
     } else if (line.trim()) {
       console.log(`[ps:${this.name}]`, line);
@@ -107,6 +137,17 @@ class PSHost {
       this.jobs.set(id, job);
       this.proc.stdin.write(`${id} ${Buffer.from(script, 'utf8').toString('base64')}\n`);
     });
+  }
+
+  _helperFailed(proc) {
+    this.helperFails++;
+    try { proc.kill(); } catch {}
+    if (this.helperFails >= 2) this._switchToPowerShell();
+  }
+  _switchToPowerShell() {
+    if (helperBroken) return;
+    helperBroken = true;
+    console.error('[moteur] le moteur compilé ne marche pas sur ce PC : retour à PowerShell');
   }
 
   // Garder le processus en vie (ex. onglet Stats ouvert)
@@ -133,4 +174,4 @@ class PSHost {
   }
 }
 
-module.exports = { PSHost };
+module.exports = { PSHost, isHelperBroken: () => helperBroken };

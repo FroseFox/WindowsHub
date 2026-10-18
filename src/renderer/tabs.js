@@ -968,6 +968,7 @@ const hue = (str) => { let h = 0; for (const c of String(str)) h = (h * 31 + c.c
   const TAB_NAMES = { today: "Aujourd'hui", stats: 'Stats', clip: 'Presse-papier', valo: 'Valorant', apps: 'Apps', timer: 'Minuteur', wall: "Fond d'écran", power: 'Énergie' };
   let st = null;
   let notifStatus = null;
+  let upd = null;
   const NOTIF_TXT = {
     Allowed: ['ok', 'Accès autorisé'],
     Denied: ['bad', "Windows refuse l'accès aux notifications"],
@@ -1033,7 +1034,31 @@ const hue = (str) => { let h = 0; for (const c of String(str)) h = (h * 31 + c.c
         ${row('Lancer au démarrage de Windows', '', sw(st.login), 'data-toggle="login"')}
         ${row('Ville pour la météo', st.city ? '' : `Auto${st.autoCity ? ' : ' + esc(st.autoCity) : ''}`, `<input class="set-input" style="width:150px" placeholder="${esc(st.autoCity || 'Ville')}" value="${esc(st.city)}" data-city><button class="pill-btn ghost" data-city-save>OK</button>`)}
         ${row('Historique du presse-papier', 'Les éléments épinglés sont toujours gardés', `<div class="seg">${[25, 50, 100, 200].map((n) => `<button class="seg-b ${st.clipMax === n ? 'active' : ''}" data-clipmax="${n}">${n}</button>`).join('')}</div>`)}
+        ${row('Moteur Windows', st.engineNow === 'helper' ? 'Compilé : rapide et léger ✓' : st.engine === 'powershell' ? 'PowerShell (choisi)' : 'PowerShell (moteur compilé absent ou en panne)',
+          `<div class="seg"><button class="seg-b ${st.engine !== 'powershell' ? 'active' : ''}" data-engine="auto">Rapide</button><button class="seg-b ${st.engine === 'powershell' ? 'active' : ''}" data-engine="powershell">PowerShell</button></div>`)}
+        ${st.engineChanged ? '<div class="set-help">Changement pris en compte au prochain lancement : clic droit sur l\'icône du hub → Quitter, puis relance-le.</div>' : ''}
         ${row('Ouvrir / fermer le panneau', 'Marche aussi en jeu', '<span class="kbd">Ctrl</span><span class="kbd">Alt</span><span class="kbd">Espace</span>')}
+      </div>
+
+      <div class="card"><div class="card-label">Mises à jour</div>
+        ${(() => {
+          const u = upd || {};
+          const v = `Version installée : ${esc(u.current || '?')}`;
+          const TXT = {
+            idle: ['', 'Pas encore vérifié'], checking: ['', 'Vérification…'], uptodate: ['ok', 'À jour ✓'],
+            downloading: ['', `Téléchargement… ${u.progress || 0} %`], ready: ['ok', `Version ${esc(u.latest)} prête`],
+            error: ['bad', `Échec : ${esc(u.error || '')}`], private: ['bad', 'Dépôt GitHub privé : le hub ne peut pas voir les nouvelles versions'],
+            norepo: ['', 'Désactivées'],
+          };
+          const [cls, txt] = TXT[u.state] || ['', ''];
+          return row(v, `<span class="set-status ${cls}">${txt}</span>`,
+            (u.state === 'ready' ? '<button class="pill-btn" data-upd="install">Installer maintenant</button>' : '')
+            + `<button class="pill-btn ghost" data-upd="check">Vérifier</button>`)
+            + (u.state === 'private' ? `<div class="set-help">Pour que le hub se mette à jour tout seul, passe ton dépôt en public :
+              github.com → <b>WindowsHub</b> → <b>Settings</b> → tout en bas <b>Change visibility</b> → <b>Make public</b>.
+              Le code ne contient aucune info perso (tes réglages restent sur ton PC).</div>` : '')
+            + (u.state === 'ready' ? '<div class="set-help">Le hub se ferme quelques secondes, s\'installe et se relance tout seul. Tes réglages sont gardés.</div>' : '');
+        })()}
       </div>`;
     resize();
   }
@@ -1059,10 +1084,19 @@ const hue = (str) => { let h = 0; for (const c of String(str)) h = (h * 31 + c.c
     }
     else if ((el = t.closest('[data-position]'))) { await saveUi({ position: el.dataset.position }); render(); }
     else if ((el = t.closest('[data-display]'))) { await saveUi({ display: el.dataset.display }); render(); }
+    else if ((el = t.closest('[data-upd]'))) {
+      if (el.dataset.upd === 'install') { el.textContent = 'Installation…'; await feat('update:install').catch(() => {}); return; }
+      upd = { ...(upd || {}), state: 'checking' }; render();
+      upd = await feat('update:check').catch((er) => ({ ...(upd || {}), state: 'error', error: er.message }));
+      // téléchargement en cours : on suit la progression
+      const poll = async () => { upd = await feat('update:status').catch(() => upd); render(); if (upd.state === 'downloading' || upd.state === 'checking') setTimeout(poll, 700); };
+      render(); if (upd.state === 'downloading') poll();
+    }
     else if (t.closest('[data-notif-open]')) { feat('notif:open').catch(() => {}); }
     else if (t.closest('[data-notif-retry]')) { notifStatus = null; render(); notifStatus = await feat('notif:status').catch(() => 'error'); render(); }
     else if (t.closest('[data-notif-test]')) { setState('pill'); setTimeout(() => notify({ app: 'Hub', title: 'Notification de test', body: 'Les notifications de tes applis apparaîtront comme ça.', glyph: 'bell', accent: true }), 500); }
     else if ((el = t.closest('[data-music]'))) { st.musicApp = el.dataset.music; await set('musicApp', st.musicApp); loadMusicApp(); render(); }
+    else if ((el = t.closest('[data-engine]'))) { if (st.engine !== el.dataset.engine) { st.engine = el.dataset.engine; st.engineChanged = true; await set('engine', st.engine); render(); } }
     else if ((el = t.closest('[data-clipmax]'))) { st.clipMax = +el.dataset.clipmax; await set('clipMax', st.clipMax); render(); }
     else if ((el = t.closest('[data-toggle]'))) {
       if (!t.closest('.switch')) return;
@@ -1118,6 +1152,7 @@ const hue = (str) => { let h = 0; for (const c of String(str)) h = (h * 31 + c.c
   TABS.settings = {
     async show() {
       try { st = await feat('settings:get'); } catch { st = st || null; }
+      upd = await feat('update:status').catch(() => upd);
       render();
       if (st && st.ui.notifs) { notifStatus = await feat('notif:status').catch(() => 'error'); render(); }
     },

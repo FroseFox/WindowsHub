@@ -33,6 +33,10 @@ const P = {
   clipboard: '<rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
   grid: '<rect width="7" height="7" x="3" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="14" rx="1.5"/><rect width="7" height="7" x="3" y="14" rx="1.5"/>',
   image: '<rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
+  mixer: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
+  mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/>',
+  micOff: '<path d="m2 2 20 20"/><path d="M18.89 13.23A7 7 0 0 0 19 11v-1"/><path d="M5 10v1a7 7 0 0 0 12 5"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M9 9v2a3 3 0 0 0 5.12 2.12"/><path d="M12 18v4"/>',
+  download: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
   target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.5"/><path d="M12 1.5v5M12 17.5v5M1.5 12h5M17.5 12h5"/>',
   extern: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
   timer: '<path d="M10 2h4M12 14l3-3"/><circle cx="12" cy="14" r="8"/>',
@@ -416,7 +420,7 @@ function renderVolume() {
   const slider = $('#volSlider');
   $('.fill', slider).style.width = v + '%';
   slider.classList.toggle('muted', !!sys.mute);
-  $('#volPct').textContent = sys.volume == null ? '–' : v + '%';
+  $('#volPct b').textContent = sys.volume == null ? '–' : v + '%';
   setIcon($('.fill .ic', slider), sys.mute || v === 0 ? 'volX' : v < 34 ? 'vol1' : 'vol2');
 }
 
@@ -509,6 +513,7 @@ const wheelVol = (e) => {
 };
 slider.addEventListener('wheel', wheelVol, { passive: false });
 tiles.audio.addEventListener('wheel', wheelVol, { passive: false });
+$('#volPct').addEventListener('click', () => openDetail('mixer'));
 
 // ---------- Sous-fenêtres : Wi-Fi / Bluetooth / Son ----------
 let detail = null;          // 'wifi' | 'bt' | 'audio' | null
@@ -520,7 +525,7 @@ const dBusy = new Set();
 const dErr = {};
 const dBody = $('.d-body');
 const dSwitch = $('.view-detail .switch');
-const TITLES = { wifi: 'Wi-Fi', bt: 'Bluetooth', audio: 'Son' };
+const TITLES = { wifi: 'Wi-Fi', bt: 'Bluetooth', audio: 'Son', mixer: 'Mélangeur' };
 
 function openDetail(key) {
   detail = key;
@@ -554,9 +559,10 @@ function renderDetailHead() {
     sub = sys.bt ? (n ? `${n} appareil${n > 1 ? 's' : ''} connecté${n > 1 ? 's' : ''}` : 'Aucun appareil connecté') : 'Désactivé';
   }
   if (detail === 'audio') sub = sys.mute ? 'Muet' : `Sortie : ${sys.output || '—'}`;
+  if (detail === 'mixer') sub = `Volume de chaque appli · ${sys.output || 'sortie par défaut'}`;
   $('.d-sub').textContent = sub;
   dSwitch.classList.toggle('on', radioOn());
-  dSwitch.hidden = (detail === 'wifi' && sys.wifi === null) || (detail === 'bt' && sys.bt === null);
+  dSwitch.hidden = (detail === 'wifi' && sys.wifi === null) || (detail === 'bt' && sys.bt === null) || detail === 'mixer';
   $('.d-refresh').classList.toggle('spin', dLoading);
 }
 
@@ -570,26 +576,34 @@ async function loadDetail(quiet) {
   dLoading = true;
   renderDetailHead();
   if (!quiet && !dItems.length) renderDetail();
-  const cmd = { wifi: 'wifi:list', bt: 'bt:list', audio: 'audio:list' }[key];
+  const cmd = { wifi: 'wifi:list', bt: 'bt:list', audio: 'audio:list', mixer: 'mix:list' }[key];
   let r = null;
-  try { r = await api.list(cmd); } catch { r = null; }
+  try {
+    if (key === 'mixer') { const f = await api.feat(cmd); r = f && f.ok ? f.data : null; }
+    else r = await api.list(cmd);
+  } catch { r = null; }
   if (detail !== key) return;
   dLoading = false;
-  if (r && r.ok) { dItems = Array.isArray(r.items) ? r.items : r.items ? [r.items] : []; dFail = null; }
+  // pendant qu'on règle un curseur, on n'écrase pas l'affichage
+  if (key === 'mixer' && mixDrag) { later2(key); return; }
+  if (r && r.ok) { dItems = Array.isArray(r.items) ? r.items : r.items ? [r.items] : []; dFail = null; if (key === 'mixer') dMic = r.mic || null; }
   else dFail = (r && r.reason) || 'error';
   renderDetailHead();
   renderDetail();
   // actualisation automatique tant que la fenêtre est ouverte
-  const every = { wifi: 12000, bt: 4000, audio: 4000 }[key];
-  const later = () => {
-    dRefreshT = setTimeout(() => {
-      if (detail !== key) return;
-      if (dOpenKey || dBusy.size) later(); else loadDetail(true);
-    }, every);
-  };
-  later();
+  later2(key);
+}
+function later2(key) {
+  const every = { wifi: 12000, bt: 4000, audio: 4000, mixer: 2500 }[key];
+  clearTimeout(dRefreshT);
+  dRefreshT = setTimeout(() => {
+    if (detail !== key) return;
+    if (dOpenKey || dBusy.size || mixDrag) later2(key); else loadDetail(true);
+  }, every);
 }
 let dFail = null;
+let dMic = null;
+let mixDrag = null;   // curseur du mélangeur en cours de réglage
 
 function msg(text, button) {
   return `<div class="d-msg"><span>${text}</span>${button || ''}</div>`;
@@ -605,8 +619,10 @@ function renderDetail() {
   else if (dFail === 'location') html = msg('Windows ne laisse voir les réseaux Wi-Fi qu\'aux applis qui ont accès à la localisation.', '<button class="pill-btn" data-act="location">Autoriser la localisation</button>');
   else if (dFail === 'noadapter') html = msg('Aucune carte Wi-Fi trouvée sur ce PC.');
   else if (dFail) html = msg('Impossible de charger la liste.', '<button class="pill-btn ghost" data-act="retry">Réessayer</button>');
+  else if (key === 'mixer') html = mixerHtml();
   else if (!dItems.length) html = msg(key === 'bt' ? 'Aucun appareil associé. Associe-le une première fois depuis Windows.' : 'Rien à afficher.', key === 'bt' ? '<button class="pill-btn ghost" data-act="pair">Associer un appareil</button>' : '');
   else html = dItems.map((it) => itemHtml(key, it)).join('');
+  if (key === 'audio' && dItems.length) html += `<button class="mx-out" data-act="mixer">${icon('mixer')}<span>Mélangeur : volume de chaque appli</span>${icon('chevron')}</button>`;
   dBody.innerHTML = html;
   const input = $('input', dBody);
   if (input) { setTyping(true); setTimeout(() => input.focus(), 30); } else setTyping(false);
@@ -667,6 +683,72 @@ function itemHtml(key, it) {
       <span class="it-end">${it.current ? icon('check') : ''}</span></button></div>`;
 }
 
+// ---------- Mélangeur ----------
+function mixRowHtml(a) {
+  const id = 'm:' + a.key;
+  return `<div class="item mx ${a.mute ? 'muted' : ''}" data-id="${esc(id)}">
+    <span class="mx-ic">${a.icon ? `<img src="${a.icon}" alt="">` : icon(a.key === 'system' ? 'bell' : 'vol2')}</span>
+    <div class="mx-mid">
+      <div class="mx-top"><b>${esc(a.name)}</b>${a.active && !a.mute ? '<i class="mx-live" title="Joue du son"></i>' : ''}<span class="mx-pct">${a.mute ? 'Muet' : a.vol + ' %'}</span></div>
+      <div class="mx-slider" data-act="mix-vol"><div class="mx-fill" style="width:${a.vol}%"></div></div>
+    </div>
+    <button class="mx-mute" data-act="mix-mute" title="${a.mute ? 'Remettre le son' : 'Couper le son'}">${icon(a.mute ? 'volX' : 'vol2')}</button>
+  </div>`;
+}
+function mixerHtml() {
+  let h = '';
+  if (dMic) {
+    h += `<div class="item mx-mic ${dMic.mute ? 'off' : ''}" data-id="mic">
+      <button class="it-main" data-act="mic"><span class="it-ic">${icon(dMic.mute ? 'micOff' : 'mic')}</span>
+        <span class="it-tx"><b>Micro ${dMic.mute ? 'coupé' : 'actif'}</b><small>${esc(dMic.name || 'Micro par défaut')}</small></span>
+        <span class="it-end"><span class="switch ${dMic.mute ? '' : 'on'}"><i></i></span></span></button></div>`;
+  }
+  if (!dItems.length) h += msg(dLoading ? 'Chargement…' : 'Aucune appli ne joue de son pour l\'instant.');
+  else h += dItems.map(mixRowHtml).join('');
+  h += `<button class="mx-out" data-act="outputs">${icon('headphones')}<span>Changer de sortie audio</span>${icon('chevron')}</button>`;
+  return h;
+}
+function mixSet(row, e) {
+  const key = row.dataset.id.slice(2);
+  const a = dItems.find((x) => x.key === key);
+  if (!a) return;
+  const r = $('.mx-slider', row).getBoundingClientRect();
+  const v = Math.round(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * 100);
+  mixApply(row, a, v);
+}
+function mixApply(row, a, v) {
+  a.vol = v;
+  if (a.mute && v > 0) { a.mute = false; row.classList.remove('muted'); $('.mx-mute', row).innerHTML = icon('vol2'); api.feat('mix:mute', { key: a.key, mute: false }); }
+  $('.mx-fill', row).style.width = v + '%';
+  $('.mx-pct', row).textContent = v + ' %';
+  api.feat('mix:volume', { key: a.key, vol: v });
+}
+dBody.addEventListener('pointerdown', (e) => {
+  const sl = e.target.closest('.mx-slider');
+  if (!sl || detail !== 'mixer') return;
+  const row = sl.closest('.item');
+  mixDrag = row; dragging = true;
+  sl.setPointerCapture(e.pointerId);
+  row.classList.add('dragging');
+  mixSet(row, e);
+});
+dBody.addEventListener('pointermove', (e) => { if (mixDrag && e.target.closest('.mx-slider')) mixSet(mixDrag, e); });
+const mixEnd = () => {
+  if (!mixDrag) return;
+  mixDrag.classList.remove('dragging');
+  mixDrag = null; dragging = false;
+  if (!hovering) leave();
+};
+dBody.addEventListener('pointerup', mixEnd);
+dBody.addEventListener('pointercancel', mixEnd);
+dBody.addEventListener('wheel', (e) => {
+  const row = e.target.closest('.item.mx');
+  if (!row || detail !== 'mixer') return;
+  e.preventDefault();
+  const a = dItems.find((x) => x.key === row.dataset.id.slice(2));
+  if (a) mixApply(row, a, Math.max(0, Math.min(100, a.vol + (e.deltaY < 0 ? 4 : -4))));
+}, { passive: false });
+
 function itemOf(el) {
   const box = el.closest('.item');
   if (!box) return null;
@@ -695,6 +777,21 @@ dBody.addEventListener('click', async (e) => {
   if (act === 'location') { api.openSettings('location'); return; }
   if (act === 'pair') { api.openSettings('bt'); return; }
   if (act === 'retry') { loadDetail(); return; }
+  if (act === 'outputs') { openDetail('audio'); return; }
+  if (act === 'mixer') { openDetail('mixer'); return; }
+  if (act === 'mic' && dMic) {
+    dMic.mute = !dMic.mute; renderDetail();
+    await api.feat('mic:mute', { mute: dMic.mute });
+    return;
+  }
+  if (act === 'mix-mute') {
+    const row = b.closest('.item'), a = dItems.find((x) => 'm:' + x.key === row.dataset.id);
+    if (!a) return;
+    a.mute = !a.mute; renderDetail();
+    await api.feat('mix:mute', { key: a.key, mute: a.mute });
+    return;
+  }
+  if (act === 'mix-vol') return;
   const found = itemOf(b);
   if (!found) return;
   const { id, it } = found;
@@ -797,7 +894,13 @@ function notifClick(e) {
 }
 // panneau refermé : on affiche les notifications en attente
 setInterval(() => { if (!notifCur && notifQueue.length && state === 'pill') nextNotif(); }, 1000);
-api.on('notif', (n) => notify({ app: n.app, title: n.title || n.app, body: n.body, icon: n.icon, glyph: 'bell' }));
+api.on('notif', (n) => {
+  if (n.action === 'update') {
+    notify({ app: n.app, title: n.title, body: n.body, glyph: 'download', accent: true, ms: 10000, onClick: () => api.feat('update:install') });
+    return;
+  }
+  notify({ app: n.app, title: n.title || n.app, body: n.body, icon: n.icon, glyph: 'bell' });
+});
 
 // petit son (aucun fichier : généré à la volée)
 let audioCtx = null;
@@ -1134,6 +1237,16 @@ function createMock() {
         case 'settings:get': return ok({ ui: this._ui || (this._ui = { accent: '#b5dca5', bg: '#1f171b', opacity: 100, openOn: 'click', peek: true, hiddenTabs: [], display: 'primary', notifs: true, notifsInGame: false, pillEvent: true }), gameMode: true, login: false, calConnected: !!this._cal, city: '', autoCity: 'Dourdan', clipMax: 50, musicApp: '', apps: [{ key: 'id:dz', name: 'Deezer' }, { key: 'id:val', name: 'VALORANT' }], screens: [{ id: '1', name: 'LG', size: '2560×1440', primary: true }, { id: '2', name: 'Dell', size: '1920×1080', primary: false }] });
         case 'settings:set': if (args.key === 'ui') this._ui = args.value; return ok(true);
         case 'music:app': return ok({ key: 'id:dz', name: 'Deezer' });
+        case 'mix:list': return ok({ ok: true, mic: { name: 'Micro (HyperX QuadCast)', mute: false }, items: [
+          { key: 'discord', name: 'Discord', vol: 80, mute: false, active: true, icon: null },
+          { key: 'valorant', name: 'VALORANT', vol: 65, mute: false, active: true, icon: null },
+          { key: 'deezer', name: 'Deezer', vol: 35, mute: false, active: true, icon: null },
+          { key: 'chrome', name: 'Google Chrome', vol: 100, mute: true, active: false, icon: null },
+          { key: 'system', name: 'Sons système', vol: 50, mute: false, active: false, icon: null },
+        ] });
+        case 'mix:volume': case 'mix:mute': case 'mic:mute': return ok(true);
+        case 'update:status': return ok({ state: 'ready', current: '1.2.1', latest: '1.3.0', repo: 'FroseFox/WindowsHub', packaged: true });
+        case 'update:check': return ok({ state: 'uptodate', current: '1.3.0', latest: '1.3.0', repo: 'FroseFox/WindowsHub', packaged: true });
         case 'valo:data': {
           if (new URLSearchParams(location.search).get('valo') === 'setup') return ok({ setup: { name: '', tag: '', region: 'eu', hasKey: false } });
           const H = 3600e3, n = Date.now();

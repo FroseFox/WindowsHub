@@ -8,6 +8,8 @@ Une petite pilule collée en haut au centre de l'écran. Elle affiche la musique
 - **Flèche › sur Wi-Fi** : liste des réseaux, connexion (avec mot de passe si besoin), déconnexion
 - **Flèche › sur Bluetooth** : appareils associés ; clic sur un casque/une enceinte = connecter ou déconnecter
 - **Son** : clic = muet, molette = volume ; **flèche ›** = choisir la sortie audio (casque, enceinte, écran…)
+- **Mélangeur** : clic sur le **pourcentage** à droite de la barre de volume → volume de **chaque appli** (Discord, jeu, Deezer…),
+  bouton muet par appli, molette sur une ligne pour ajuster, et bouton pour **couper le micro**.
 - **Barre de volume** : glisser ou molette
 - **Mode sombre** : bascule le thème clair/sombre de Windows
 - **Éclairage nocturne** : bascule (méthode non officielle ; si Windows ne suit pas, le réglage Windows s'ouvre)
@@ -55,6 +57,21 @@ La barre d'onglets est en icônes : l'onglet actif affiche son nom, et un indica
   lancement au démarrage, ville météo, taille de l'historique du presse-papier.
 - Astuce : la molette sur la barre d'onglets passe d'un onglet à l'autre.
 
+## Mises à jour automatiques
+Le hub regarde tout seul (au démarrage puis toutes les 6 h, jamais en partie) s'il y a une nouvelle Release sur GitHub.
+Si oui, il la télécharge et affiche « Mise à jour prête » dans la pilule : un clic, il se ferme, s'installe et se relance (réglages gardés).
+Aussi dans ⚙ Paramètres → Mises à jour, et dans le menu de l'icône.
+⚠️ Ça ne marche que si le dépôt GitHub est **public** (sinon GitHub cache les Releases). Le code ne contient aucune info perso.
+
+## Tes secrets
+L'adresse secrète de Google Agenda et la clé API Valorant sont **chiffrées** dans `prefs.json` avec ton compte Windows
+(même protection que les mots de passe de Chrome) : copiées sur un autre PC ou un autre compte, elles sont illisibles.
+
+## Moteur Windows
+Le hub parle à Windows via un petit programme compilé (`hubhelper.exe`, construit par GitHub) : démarrage instantané et
+beaucoup moins de mémoire que PowerShell. S'il manque ou plante, le hub repasse tout seul sur PowerShell.
+Tu peux aussi forcer PowerShell : ⚙ Paramètres → Système → Moteur Windows.
+
 ## Léger sur les ressources
 - Un seul PowerShell permanent qui **prévient** quand quelque chose change (musique, Wi-Fi, volume, presse-papier…) au lieu d'être interrogé en boucle. Un second est lancé seulement pour les listes / stats / applis, et s'arrête après 1 minute sans servir.
 - En jeu (plein écran), les vérifications ralentissent fortement et les animations s'arrêtent.
@@ -88,7 +105,9 @@ Windows peut afficher « Windows a protégé votre ordinateur » au premier lanc
 ## Les fichiers
 - `src/main.js` — la fenêtre transparente, l'icône, les raccourcis
 - `src/features.js` — météo, stats, presse-papier, applis, fonds d'écran, énergie
-- `src/ps/` — les scripts PowerShell qui parlent à Windows (radios, volume, thème, média)
+- `helper/` — le moteur compilé (C#) ; `src/native/` — le code Windows partagé avec PowerShell
+- `src/ps/` — les scripts PowerShell (moteur de secours)
+- `src/updater.js` — les mises à jour automatiques
 - `src/renderer/` — l'interface (HTML / CSS / JS) : c'est là pour changer le look (`tabs.js` = les onglets)
 
 Wi-Fi : Windows ne montre la liste des réseaux qu'aux applis autorisées à utiliser la localisation.
