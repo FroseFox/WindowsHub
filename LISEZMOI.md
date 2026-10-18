@@ -41,6 +41,9 @@ La barre d'onglets est en icônes : l'onglet actif affiche son nom, et un indica
 - **Stats** : processeur, mémoire, carte graphique, disque C:, débit réseau (avec courbes), temps allumé ou batterie.
 - **Presse-papier** : historique de ce que tu copies (texte et images). Clic = recopier, épingle = garder, recherche, pause.
   Si la liste reste vide, une petite ligne en dessous dit ce qui bloque (aucune copie détectée, ou l'erreur de Windows).
+- **Valorant** : ton rang (avec l'icône) et tes RR, combien de RR gagnés ou perdus aujourd'hui, et tes 10 derniers matchs classés
+  (map, ± RR). Clic sur un match = il s'ouvre sur tracker.gg ; bouton « tracker.gg » = ton profil.
+  Il faut une clé API gratuite HenrikDev (expliqué dans l'onglet). Ton Riot ID est détecté tout seul si le client Riot est ouvert.
 - **Apps** : seulement les applis que tu ajoutes. « Ajouter » → cherche une appli installée ou « Fichier… » pour un .exe / raccourci (jeux hors menu Démarrer). Survol → ✕ pour retirer, glisser-déposer pour réorganiser, recherche + Entrée pour lancer.
 - **Fond d'écran** : les images d'un dossier (Images par défaut, « Changer de dossier » pour choisir), clic = appliquer, « Au hasard ».
 - **Minuteur** : minuteur (1 à 60 min, ajustable) avec anneau de progression, et chrono avec tours (meilleur / pire tour en couleur).

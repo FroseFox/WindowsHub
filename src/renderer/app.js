@@ -33,6 +33,8 @@ const P = {
   clipboard: '<rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
   grid: '<rect width="7" height="7" x="3" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="14" rx="1.5"/><rect width="7" height="7" x="3" y="14" rx="1.5"/>',
   image: '<rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
+  target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.5"/><path d="M12 1.5v5M12 17.5v5M1.5 12h5M17.5 12h5"/>',
+  extern: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
   timer: '<path d="M10 2h4M12 14l3-3"/><circle cx="12" cy="14" r="8"/>',
   gear: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   bell: '<path d="M10.27 21a2 2 0 0 0 3.46 0"/><path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.41 13.96 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.41 5.96-2.74 7.33"/>',
@@ -156,6 +158,19 @@ const cards = [makeCard($('#peekCard')), makeCard($('#openCard'))];
 $$('[data-icon]').forEach((el) => setIcon(el, el.dataset.icon));
 
 // ---------- Taille et états de l'îlot ----------
+// Titres trop longs dans la pilule : ils défilent doucement au lieu d'être coupés
+function marquee() {
+  $$('.layer-pill .mq').forEach((m) => {
+    const inner = m.firstElementChild;
+    if (!inner) return;
+    const over = inner.scrollWidth - m.clientWidth;
+    if (over > 3) {
+      m.classList.add('run');
+      m.style.setProperty('--mq', `${-over}px`);
+      m.style.setProperty('--mqd', `${(6 + over / 22).toFixed(1)}s`);
+    } else m.classList.remove('run');
+  });
+}
 function size() {
   let w, h;
   if (state === 'pill') {
@@ -167,6 +182,7 @@ function size() {
     const el = $(state === 'peek' ? '.peek-inner' : state === 'notif' ? '.notif-inner' : '.open-inner');
     w = el.offsetWidth; h = el.offsetHeight;
   }
+  if (state === 'pill') requestAnimationFrame(marquee);
   wrap.style.width = w + 'px';
   wrap.style.height = h + 'px';
   // zone occupée (sert, en jeu, à savoir si le curseur est sur la pilule)
@@ -854,21 +870,21 @@ function renderChips() {
     else if (e.allDay) when = new Date(e.start).toDateString() === new Date().toDateString() ? "Aujourd'hui" : 'Demain';
     else if (mins <= 60) { cls = mins <= 15 ? 'soon' : ''; when = `dans ${mins} min`; }
     else when = new Date(e.start).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
-    html += `<span class="pchip ev ${cls}" title="${esc(e.title)}">${icon('calendar')}<span>${esc(when)} · ${esc(e.title)}</span></span>`;
+    html += `<span class="pchip ev ${cls}" title="${esc(e.title)}">${icon('calendar')}<span data-t>${esc(when)}</span><span class="mq"><span data-t>· ${esc(e.title)}</span></span></span>`;
     const key = e.start + '|' + e.title;
     if (!e.allDay && e.start > now && e.start - now <= 10 * 60e3 && !reminded.has(key)) {
       reminded.add(key);
       notify({ app: 'Agenda', title: e.title, body: `Dans ${Math.max(1, mins)} min · ${new Date(e.start).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}${e.location ? ' · ' + e.location : ''}`, glyph: 'calendar', accent: true, ms: 9000 });
     }
   }
-  if (clock.timer.running || clock.timer.done) html += `<span class="pchip timer ${clock.timer.done ? 'done' : ''}">${icon('timer')}<span>${clock.timer.done ? 'Terminé' : fmtClock(timerLeft())}</span></span>`;
-  else if (clock.sw.running) html += `<span class="pchip timer">${icon('flag')}<span>${fmtClock(swElapsed())}</span></span>`;
+  if (clock.timer.running || clock.timer.done) html += `<span class="pchip timer ${clock.timer.done ? 'done' : ''}">${icon('timer')}<span data-t>${clock.timer.done ? 'Terminé' : fmtClock(timerLeft())}</span></span>`;
+  else if (clock.sw.running) html += `<span class="pchip timer">${icon('flag')}<span data-t>${fmtClock(swElapsed())}</span></span>`;
   if (box.innerHTML !== html) {
     // on ne remplace que si ça change (évite de relancer les animations)
-    const same = box.dataset.keys === html.replace(/<span>[^<]*<\/span>/g, '');
-    if (same) { const spans = $$('.pchip > span', box), tmp = document.createElement('div'); tmp.innerHTML = html; $$('.pchip > span', tmp).forEach((x, i) => { if (spans[i]) spans[i].textContent = x.textContent; }); }
+    const keys = html.replace(/<span data-t>[^<]*<\/span>/g, '');
+    if (box.dataset.keys === keys) { const spans = $$('[data-t]', box), tmp = document.createElement('div'); tmp.innerHTML = html; $$('[data-t]', tmp).forEach((x, i) => { if (spans[i] && spans[i].textContent !== x.textContent) spans[i].textContent = x.textContent; }); }
     else box.innerHTML = html;
-    box.dataset.keys = html.replace(/<span>[^<]*<\/span>/g, '');
+    box.dataset.keys = keys;
     if (state === 'pill') size();
   }
 }
@@ -912,7 +928,8 @@ function renderMedia() {
   const isPlaying = playing();
   wrap.classList.toggle('has-media', on);
   wrap.classList.toggle('playing', isPlaying);
-  $('.pill-title').textContent = on ? [media.title, media.artist].filter(Boolean).join(' · ') : '';
+  const pt = $('.pill-title'), ptText = on ? [media.title, media.artist].filter(Boolean).join(' · ') : '';
+  if (pt.textContent !== ptText) { pt.classList.add('mq'); pt.innerHTML = `<span>${esc(ptText)}</span>`; }
   cards.forEach((c) => {
     c.root.classList.toggle('idle', !on);
     c.root.classList.toggle('playing', isPlaying);
@@ -1117,7 +1134,17 @@ function createMock() {
         case 'settings:get': return ok({ ui: this._ui || (this._ui = { accent: '#b5dca5', bg: '#1f171b', opacity: 100, openOn: 'click', peek: true, hiddenTabs: [], display: 'primary', notifs: true, notifsInGame: false, pillEvent: true }), gameMode: true, login: false, calConnected: !!this._cal, city: '', autoCity: 'Dourdan', clipMax: 50, musicApp: '', apps: [{ key: 'id:dz', name: 'Deezer' }, { key: 'id:val', name: 'VALORANT' }], screens: [{ id: '1', name: 'LG', size: '2560×1440', primary: true }, { id: '2', name: 'Dell', size: '1920×1080', primary: false }] });
         case 'settings:set': if (args.key === 'ui') this._ui = args.value; return ok(true);
         case 'music:app': return ok({ key: 'id:dz', name: 'Deezer' });
-        case 'cal:next': { const x = new Date(); x.setMinutes(x.getMinutes() + 12); return ok({ start: x.getTime(), end: x.getTime() + 3600e3, title: 'Scrim vs Team Nova', allDay: false }); }
+        case 'valo:data': {
+          if (new URLSearchParams(location.search).get('valo') === 'setup') return ok({ setup: { name: '', tag: '', region: 'eu', hasKey: false } });
+          const H = 3600e3, n = Date.now();
+          const ms = [['Ascent', 21], ['Bind', -16], ['Lotus', 19], ['Sunset', 23], ['Haven', -18], ['Split', 17], ['Abyss', -15], ['Pearl', 20]];
+          return ok({ setup: { name: 'Celyan', tag: 'PRZM', region: 'eu', hasKey: true }, at: n - 60e3, data: {
+            name: 'Celyan', tag: 'PRZM', region: 'eu', tierId: 21, tier: 'Ascendant 1', rr: 47, rankImg: null,
+            today: { rr: 47, w: 3, l: 1 },
+            matches: ms.map(([map, c], i) => ({ id: 'm' + i, map, t: n - (i + 1) * 1.4 * H, change: c, rr: 47, tier: i < 3 ? 'Ascendant 1' : 'Diamant 3', mapImg: null })),
+          } });
+        }
+        case 'cal:next': { const x = new Date(); x.setMinutes(x.getMinutes() + 12); return ok({ start: x.getTime(), end: x.getTime() + 3600e3, title: (new URLSearchParams(location.search).get('evt') || 'Scrim vs Team Nova'), allDay: false }); }
         case 'notif:status': return ok('Allowed');
         case 'cal:set': this._cal = !!args.url; return ok({ ok: true, count: 4 });
         case 'cal:events': {
@@ -1125,7 +1152,7 @@ function createMock() {
           const at = (dd, h, m) => { const x = new Date(); x.setDate(x.getDate() + dd); x.setHours(h, m, 0, 0); return x.getTime(); };
           return ok({ configured: true, events: [
             { start: at(0, 14, 0), end: at(0, 15, 30), title: 'Review des VODs', location: 'Discord PRIZM' },
-            { start: at(0, 21, 0), end: at(0, 23, 0), title: 'Scrim vs Team Nova', location: '' },
+            { start: at(0, 21, 0), end: at(0, 23, 0), title: (new URLSearchParams(location.search).get('evt') || 'Scrim vs Team Nova'), location: '' },
             { start: at(2, 0, 0), end: at(3, 0, 0), allDay: true, title: 'Anniversaire Lucas', location: '' },
             { start: at(5, 18, 0), end: at(5, 20, 0), title: 'Tournoi qualifs', location: '' },
           ] });

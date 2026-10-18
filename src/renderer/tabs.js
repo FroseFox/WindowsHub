@@ -115,7 +115,15 @@ const hue = (str) => { let h = 0; for (const c of String(str)) h = (h * 31 + c.c
     }
     const list = eventsOn(selected);
     const now = Date.now();
-    let html = `<div class="ag-day">${dayLabel(selected)}</div>`;
+    let html = '';
+    if (cal.tzWarn) {
+      const w = cal.tzWarn, h = Math.abs(w.hours);
+      html += `<div class="ag-warn"><b>Heures décalées de ${String(h).replace('.', ',')} h</b>
+        Ton Google Agenda est réglé sur le fuseau « ${esc(w.calTz)} », ton PC sur « ${esc(w.pcTz)} ».
+        Dans Google Agenda : ⚙ Paramètres → Général → <b>Fuseau horaire</b> → choisis Paris.
+        <button class="pill-btn ghost" data-ag="tzfix">Ouvrir les paramètres Google</button></div>`;
+    }
+    html += `<div class="ag-day">${dayLabel(selected)}</div>`;
     if (!list.length) {
       const next = cal.events.find((e) => e.start >= selected + DAYMS);
       html += `<div class="ag-empty">Rien de prévu.${next ? `<br>Prochain : <b>${esc(next.title)}</b> · ${dayLabel(sod(next.start)).toLowerCase()}${next.allDay ? '' : ' à ' + hm(next.start)}` : ''}</div>`;
@@ -135,7 +143,7 @@ const hue = (str) => { let h = 0; for (const c of String(str)) h = (h * 31 + c.c
     const to = new Date(view.getFullYear(), view.getMonth() + 3, 1).getTime();
     try {
       const r = await feat('cal:events', { from, to, force });
-      cal = { configured: r.configured, events: r.events || [], error: r.error };
+      cal = { configured: r.configured, events: r.events || [], error: r.error, tzWarn: r.tzWarn };
       renderCal(); renderAgenda();
       if (r.stale && !force) loadEvents(true);
     } catch (e) { cal = { configured: true, events: [], error: e.message }; renderAgenda(); }
@@ -172,7 +180,7 @@ const hue = (str) => { let h = 0; for (const c of String(str)) h = (h * 31 + c.c
     if (ev) { feat('cal:open', { date: +ev.dataset.ev }).catch(() => {}); return; }
     if (e.target.closest('.t-add')) { feat('cal:open', { date: selected, create: true }).catch(() => {}); return; }
     const ag = e.target.closest('[data-ag]');
-    if (ag) { if (ag.dataset.ag === 'setup') { showTab('settings'); setTimeout(() => { const el = $('#set-cal'); if (el) el.scrollIntoView({ block: 'center' }); }, 80); } else loadEvents(true); }
+    if (ag) { if (ag.dataset.ag === 'tzfix') { feat('cal:tzfix').catch(() => {}); return; } if (ag.dataset.ag === 'setup') { showTab('settings'); setTimeout(() => { const el = $('#set-cal'); if (el) el.scrollIntoView({ block: 'center' }); }, 80); } else loadEvents(true); }
   });
 
   // affiche tout de suite la dernière météo connue, puis la met à jour si elle est trop ancienne
@@ -421,6 +429,139 @@ const hue = (str) => { let h = 0; for (const c of String(str)) h = (h * 31 + c.c
       try { const r = await feat('clip:list'); items = r.items || []; paused = r.paused; diag = r.diag || null; } catch (e) { diag = { events: 1, error: 'le hub ne répond pas (' + e.message + ')' }; }
       render();
     },
+  };
+})();
+
+// =====================================================================
+// Valorant : rang, RR, derniers matchs (clic = tracker.gg)
+// =====================================================================
+(function valoTab() {
+  const pane = $('[data-pane="valo"]');
+  const body = $('.valo-body', pane);
+  let r = null;            // dernière réponse de valo:data
+  let setupOpen = false;   // écran de réglages affiché
+  let loading = false;
+  let msg = '';
+  const REG = [['eu', 'Europe'], ['na', 'Amérique N.'], ['ap', 'Asie-Pac.'], ['kr', 'Corée'], ['latam', 'LATAM'], ['br', 'Brésil']];
+  const ago2 = (t) => {
+    const m = Math.round((Date.now() - t) / 60e3);
+    if (m < 60) return `il y a ${Math.max(1, m)} min`;
+    const h = Math.round(m / 60);
+    if (h < 24) return `il y a ${h} h`;
+    const d = Math.round(h / 24);
+    return d === 1 ? 'hier' : `il y a ${d} j`;
+  };
+  const sign = (n) => (n > 0 ? '+' : n < 0 ? '−' : '±') + Math.abs(n);
+
+  function renderSetup() {
+    const s = (r && r.setup) || { region: 'eu' };
+    body.innerHTML = `
+      <div class="card vl-setup">
+        <div class="card-label">Valorant · réglages</div>
+        <div class="set-row"><span>Riot ID<small>Détecté tout seul si le client Riot est ouvert</small></span>
+          <div class="set-ctl"><input class="set-input" style="width:190px" placeholder="Pseudo#TAG" value="${esc(s.name ? s.name + '#' + s.tag : '')}" data-v="id"><button class="pill-btn ghost" data-va="detect">Détecter</button></div></div>
+        <div class="set-row"><span>Région</span><div class="set-ctl">${REG.map(([k, n]) => `<button class="chip ${s.region === k ? 'on' : ''}" data-reg="${k}">${n}</button>`).join('')}</div></div>
+        <div class="set-row"><span>Clé API HenrikDev${s.hasKey ? '<small>Enregistrée ✓ (laisse vide pour la garder)</small>' : '<small>Gratuite, nécessaire pour lire ton rang</small>'}</span>
+          <div class="set-ctl"><input class="set-input" type="password" style="width:190px" placeholder="HDEV-…" data-v="key"></div></div>
+        ${s.hasKey ? '' : `<div class="set-help">Pour avoir la clé : <b>Ouvrir le site</b> → connecte-toi avec Discord → <b>API Keys</b> → <b>Generate New Key</b>
+          (type « Basic », produit « Valorant », une phrase pour dire que c'est pour ton hub perso) → copie la clé <b>HDEV-…</b> et colle-la ici.
+          <br><button class="pill-btn ghost" style="margin-top:8px" data-va="keypage">Ouvrir le site</button></div>`}
+        <div class="vl-actions">${msg ? `<span class="set-status bad">${esc(msg)}</span>` : '<span></span>'}
+          ${r && r.data ? '<button class="pill-btn ghost" data-va="cancel">Annuler</button>' : ''}<button class="pill-btn" data-va="save">Enregistrer</button></div>
+      </div>`;
+    resize();
+  }
+
+  function render() {
+    if (setupOpen || !r || !r.data) {
+      if (r && !r.data && !r.error && r.setup && r.setup.hasKey && r.setup.name && !setupOpen) { body.innerHTML = '<div class="empty">Chargement…</div>'; resize(); return; }
+      if (r && r.error && !setupOpen && r.setup.hasKey && !r.badKey) {
+        body.innerHTML = `<div class="empty">${esc(r.error)}<br><button class="pill-btn ghost" style="margin-top:10px" data-va="refresh">Réessayer</button> <button class="pill-btn ghost" style="margin-top:10px" data-va="setup">Réglages</button></div>`;
+        resize(); return;
+      }
+      if (r && r.badKey) msg = r.error;
+      renderSetup(); return;
+    }
+    const d = r.data;
+    const t = d.today;
+    body.innerHTML = `
+      <div class="vl-head">
+        <div class="vl-rank">${d.rankImg ? `<img src="${d.rankImg}" alt="">` : icon('target')}</div>
+        <div class="vl-main">
+          <small>${esc(d.name)}<span>#${esc(d.tag)}</span></small>
+          <b>${esc(d.tier)}</b>
+          <div class="vl-bar"><i style="width:${Math.max(0, Math.min(100, d.rr))}%"></i></div>
+          <span class="vl-rr"><b>${d.rr}</b> / 100 RR</span>
+        </div>
+        <div class="vl-today ${t.rr > 0 ? 'pos' : t.rr < 0 ? 'neg' : ''}">
+          <b>${t.w + t.l ? sign(t.rr) + ' RR' : '—'}</b>
+          <small>aujourd'hui${t.w + t.l ? ` · ${t.w} V – ${t.l} D` : ''}</small>
+        </div>
+      </div>
+      <div class="vl-bar2">
+        <span class="vl-note">${r.error ? `<span class="set-status bad">${esc(r.error)}</span>` : `Matchs classés · mis à jour ${r.at ? ago2(r.at).replace('il y a 1 min', "à l'instant") : ''}`}</span>
+        <button class="pill-btn ghost" data-va="profile">${icon('extern')} tracker.gg</button>
+        <button class="vl-ib ${loading ? 'spin' : ''}" data-va="refresh" title="Actualiser">${icon('refresh')}</button>
+        <button class="vl-ib" data-va="setup" title="Réglages">${icon('gear')}</button>
+      </div>
+      <div class="vl-list scroll">
+        ${d.matches.length ? d.matches.map((m) => `
+          <button class="vl-m ${m.change > 0 ? 'win' : m.change < 0 ? 'loss' : ''}" data-match="${esc(m.id)}" title="Voir le match sur tracker.gg">
+            <span class="vl-map" ${m.mapImg ? `style="background-image:url('${m.mapImg}')"` : ''}></span>
+            <span class="vl-mt"><b>${esc(m.map)}</b><small>${ago2(m.t)} · ${esc(m.tier)}</small></span>
+            <span class="vl-ch">${sign(m.change)}</span>
+            <span class="vl-go">${icon('extern')}</span>
+          </button>`).join('') : '<div class="empty">Aucun match classé récent.</div>'}
+      </div>`;
+    resize();
+  }
+
+  async function load(force) {
+    loading = true; if (r && r.data) render();
+    try { r = await feat('valo:data', { force }); } catch (e) { r = { setup: (r && r.setup) || {}, error: e.message, data: r && r.data }; }
+    loading = false;
+    render();
+  }
+
+  body.addEventListener('click', async (e) => {
+    const m = e.target.closest('[data-match]');
+    if (m) { feat('valo:open', { id: m.dataset.match }).catch(() => {}); return; }
+    const reg = e.target.closest('[data-reg]');
+    if (reg) { r.setup = { ...(r && r.setup), region: reg.dataset.reg }; $$('[data-reg]', body).forEach((b) => b.classList.toggle('on', b === reg)); return; }
+    const a = e.target.closest('[data-va]');
+    if (!a) return;
+    switch (a.dataset.va) {
+      case 'refresh': load(true); break;
+      case 'profile': feat('valo:open').catch(() => {}); break;
+      case 'setup': setupOpen = true; msg = ''; render(); break;
+      case 'cancel': setupOpen = false; render(); break;
+      case 'keypage': feat('valo:keypage').catch(() => {}); break;
+      case 'detect': {
+        a.textContent = '…';
+        const id = await feat('valo:detect').catch(() => null);
+        a.textContent = 'Détecter';
+        if (id) $('[data-v="id"]', body).value = `${id.name}#${id.tag}`;
+        else { msg = 'Ouvre le client Riot (ou tape ton Riot ID)'; const st = $('.vl-actions span', body); if (st) { st.className = 'set-status bad'; st.textContent = msg; } }
+        break;
+      }
+      case 'save': {
+        const id = $('[data-v="id"]', body).value, key = $('[data-v="key"]', body).value;
+        const args = { riotId: id, region: (r && r.setup && r.setup.region) || 'eu' };
+        if (key.trim()) args.key = key;
+        const res = await feat('valo:set', args).catch((er) => ({ ok: false, error: er.message }));
+        if (!res.ok) { msg = res.error; renderSetup(); return; }
+        if (!(r && r.setup && r.setup.hasKey) && !key.trim()) { msg = 'Colle ta clé API'; renderSetup(); return; }
+        setupOpen = false; msg = ''; r = null;
+        body.innerHTML = '<div class="empty">Chargement…</div>'; resize();
+        load(true);
+        break;
+      }
+    }
+  });
+  body.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.matches('[data-v]')) { const b = $('[data-va="save"]', body); if (b) b.click(); } });
+
+  TABS.valo = {
+    show() { if (!r) body.innerHTML = '<div class="empty">Chargement…</div>'; else render(); load(false); },
   };
 })();
 
@@ -824,7 +965,7 @@ const hue = (str) => { let h = 0; for (const c of String(str)) h = (h * 31 + c.c
     ['#f2b5cf', 'Rose'], ['#f2a08a', 'Corail'], ['#f5c2a0', 'Pêche'], ['#e6e39a', 'Citron'],
   ];
   const BGS = [['#1f171b', 'Prune'], ['#1c1d21', 'Graphite'], ['#141826', 'Nuit'], ['#161d19', 'Forêt'], ['#0d0d0f', 'Noir']];
-  const TAB_NAMES = { today: "Aujourd'hui", stats: 'Stats', clip: 'Presse-papier', apps: 'Apps', timer: 'Minuteur', wall: "Fond d'écran", power: 'Énergie' };
+  const TAB_NAMES = { today: "Aujourd'hui", stats: 'Stats', clip: 'Presse-papier', valo: 'Valorant', apps: 'Apps', timer: 'Minuteur', wall: "Fond d'écran", power: 'Énergie' };
   let st = null;
   let notifStatus = null;
   const NOTIF_TXT = {

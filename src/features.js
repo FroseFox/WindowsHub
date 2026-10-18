@@ -1,6 +1,7 @@
 // Fonctions des onglets Aujourd'hui, Stats, Presse-papier, Apps, Fond d'écran et Énergie (côté Windows).
 const { app, clipboard, nativeImage, dialog, shell } = require('electron');
 const { spawn } = require('child_process');
+const https = require('https');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
@@ -550,8 +551,27 @@ function setup(ctx) {
     if (!ctx.prefs.calUrl) return { configured: false, events: [] };
     if (force || !calText) { try { await refreshCal(); } catch (e) { if (!calText) return { configured: true, error: e.message, events: [] }; } }
     const events = calText ? eventsBetween(calText, from, to) : [];
-    return { configured: true, events, stale: Date.now() - calAt > 10 * 60e3 };
+    return { configured: true, events, stale: Date.now() - calAt > 10 * 60e3, tzWarn: calTzWarning() };
   });
+  // Google Agenda réglé sur un autre fuseau horaire que le PC (ex. « UTC » au lieu de Paris) :
+  // les événements tapés à 20h dans Google sont alors réellement à 22h chez toi.
+  function tzOffset(tz, at) {
+    try {
+      const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+        .formatToParts(at).map((x) => [x.type, x.value]));
+      return Math.round((Date.UTC(+p.year, p.month - 1, +p.day, +p.hour, +p.minute) - Math.floor(at / 60e3) * 60e3) / 60e3);
+    } catch { return null; }
+  }
+  function calTzWarning() {
+    const m = calText && calText.match(/^X-WR-TIMEZONE:(.+)$/m);
+    if (!m) return null;
+    const tz = m[1].trim(), now = Date.now();
+    const off = tzOffset(tz, now), mine = -new Date(now).getTimezoneOffset();
+    if (off === null || off === mine) return null;
+    const diff = (mine - off) / 60;
+    return { calTz: tz, pcTz: Intl.DateTimeFormat().resolvedOptions().timeZone, hours: diff };
+  }
+  on('cal:tzfix', async () => { await shell.openExternal('https://calendar.google.com/calendar/r/settings'); return true; });
   on('cal:set', async ({ url }) => {
     if (!url || !url.trim()) {
       delete ctx.prefs.calUrl; calText = null; ctx.savePrefs();
@@ -637,6 +657,151 @@ function setup(ctx) {
     let a = list.find((x) => x.key === ctx.prefs.musicApp);
     if (!a) a = list.find((x) => /deezer|spotify|apple music|tidal|youtube music|soundcloud/i.test(x.name));
     return a ? { key: a.key, name: a.name } : null;
+  });
+
+  // =====================================================================
+  // Valorant : rang, RR et derniers matchs classés (API HenrikDev, clé gratuite)
+  // =====================================================================
+  const valoDir = path.join(app.getPath('userData'), 'valorant');
+  const valoLast = path.join(valoDir, 'last.json');
+  const REGIONS = ['eu', 'na', 'ap', 'kr', 'latam', 'br'];
+  const TIERS_FR = { Unrated: 'Non classé', Iron: 'Fer', Bronze: 'Bronze', Silver: 'Argent', Gold: 'Or', Platinum: 'Platine', Diamond: 'Diamant', Ascendant: 'Ascendant', Immortal: 'Immortel', Radiant: 'Radiant' };
+  const tierFr = (n) => String(n || '').replace(/^[A-Za-z]+/, (w) => TIERS_FR[w] || w);
+  const valo = () => ctx.prefs.valo || (ctx.prefs.valo = { region: 'eu' });
+  let valoCache = null;
+  try { valoCache = JSON.parse(fs.readFileSync(valoLast, 'utf8')); } catch {}
+
+  // Images (rang, maps) : téléchargées une fois puis gardées sur le disque
+  const imgMem = new Map();
+  async function imgData(url) {
+    if (!url) return null;
+    if (imgMem.has(url)) return imgMem.get(url);
+    const file = path.join(valoDir, hash(url) + '.txt');
+    try { const d = fs.readFileSync(file, 'utf8'); imgMem.set(url, d); return d; } catch {}
+    try {
+      const r = await fetch(url, { signal: timeout(6000) });
+      if (!r.ok) return null;
+      const d = `data:${r.headers.get('content-type') || 'image/png'};base64,${Buffer.from(await r.arrayBuffer()).toString('base64')}`;
+      imgMem.set(url, d);
+      fs.mkdirSync(valoDir, { recursive: true }); fs.writeFileSync(file, d);
+      return d;
+    } catch { return null; }
+  }
+  // Jeu d'icônes de rang de l'épisode en cours (valorant-api.com)
+  async function tierSet() {
+    const c = ctx.prefs.valoTierSet;
+    if (c && Date.now() - c.at < 7 * 864e5) return c.uuid;
+    try {
+      const j = await (await fetch('https://valorant-api.com/v1/competitivetiers', { signal: timeout(6000) })).json();
+      const uuid = j.data[j.data.length - 1].uuid;
+      ctx.prefs.valoTierSet = { uuid, at: Date.now() }; ctx.savePrefs();
+      return uuid;
+    } catch { return (c && c.uuid) || '03621f52-342b-cf4e-4f86-9350a49c6d04'; }
+  }
+
+  // Client Riot ouvert sur ce PC : on lit ton Riot ID (pseudo#tag) pour ne pas avoir à le taper
+  function riotLocal(pathname) {
+    return new Promise((resolve, reject) => {
+      let port, pass;
+      try {
+        const lf = path.join(process.env.LOCALAPPDATA || '', 'Riot Games', 'Riot Client', 'Config', 'lockfile');
+        [, , port, pass] = fs.readFileSync(lf, 'utf8').split(':');
+      } catch { reject(new Error('client Riot fermé')); return; }
+      const req = https.get({
+        host: '127.0.0.1', port: +port, path: pathname, rejectUnauthorized: false, timeout: 3000,
+        headers: { Authorization: 'Basic ' + Buffer.from('riot:' + pass).toString('base64') },
+      }, (r) => { let b = ''; r.on('data', (c) => { b += c; }); r.on('end', () => { try { resolve(JSON.parse(b)); } catch (e) { reject(e); } }); });
+      req.on('error', reject);
+      req.on('timeout', () => req.destroy(new Error('délai dépassé')));
+    });
+  }
+  async function detectRiotId() {
+    try {
+      const s = await riotLocal('/chat/v1/session');
+      if (s && s.game_name && s.game_tag) return { name: s.game_name, tag: s.game_tag };
+    } catch {}
+    return null;
+  }
+
+  on('valo:detect', async () => detectRiotId());
+  on('valo:set', async ({ riotId, region, key }) => {
+    const v = valo();
+    if (riotId !== undefined) {
+      const m = String(riotId).trim().match(/^(.+?)\s*#\s*([^#\s]{2,6})$/);
+      if (!m) return { ok: false, error: 'Écris ton Riot ID comme ceci : Pseudo#TAG' };
+      v.name = m[1]; v.tag = m[2];
+    }
+    if (region && REGIONS.includes(region)) v.region = region;
+    if (key !== undefined) v.key = String(key).trim();
+    ctx.savePrefs();
+    return { ok: true };
+  });
+  on('valo:open', async ({ id } = {}) => {
+    const v = valo();
+    if (id) await shell.openExternal(`https://tracker.gg/valorant/match/${encodeURIComponent(id)}`);
+    else if (v.name) await shell.openExternal(`https://tracker.gg/valorant/profile/riot/${encodeURIComponent(v.name + '#' + v.tag)}/overview`);
+    return true;
+  });
+  on('valo:keypage', async () => { await shell.openExternal('https://api.henrikdev.xyz/dashboard/'); return true; });
+
+  // ajoute les images au résultat (elles ne sont pas gardées dans last.json)
+  async function withImages(d) {
+    const set = await tierSet();
+    const [rankImg, ...maps] = await Promise.all([
+      imgData(`https://media.valorant-api.com/competitivetiers/${set}/${d.tierId}/largeicon.png`),
+      ...d.matches.map((m) => (m.mapId ? imgData(`https://media.valorant-api.com/maps/${m.mapId}/listviewicon.png`) : null)),
+    ]);
+    return { ...d, rankImg, matches: d.matches.map((m, i) => ({ ...m, mapImg: maps[i] })) };
+  }
+
+  on('valo:data', async ({ force } = {}) => {
+    const v = valo();
+    if (!v.name) {
+      const id = await detectRiotId();
+      if (id) { Object.assign(v, id); ctx.savePrefs(); }
+    }
+    const setup = { name: v.name || '', tag: v.tag || '', region: v.region || 'eu', hasKey: !!v.key };
+    if (!v.key || !v.name) return { setup };
+    const who = `${v.region}/${v.name}#${v.tag}`.toLowerCase();
+    const cached = valoCache && valoCache.who === who ? valoCache : null;
+    if (!force && cached && Date.now() - cached.at < 120e3) return { setup, data: await withImages(cached.data), at: cached.at };
+
+    let res;
+    try {
+      res = await fetch(`https://api.henrikdev.xyz/valorant/v2/mmr-history/${v.region}/pc/${encodeURIComponent(v.name)}/${encodeURIComponent(v.tag)}`,
+        { headers: { Authorization: v.key }, signal: timeout(10000) });
+    } catch (e) {
+      return { setup, error: 'Pas de connexion à l\'API Valorant', data: cached ? await withImages(cached.data) : null, at: cached && cached.at };
+    }
+    if (!res.ok) {
+      const msg = res.status === 401 || res.status === 403 ? 'Clé API refusée : vérifie-la dans les réglages de l\'onglet'
+        : res.status === 404 ? `Joueur « ${v.name}#${v.tag} » introuvable sur la région ${v.region.toUpperCase()}`
+          : res.status === 429 ? 'Trop de demandes : réessaie dans une minute'
+            : `L'API Valorant ne répond pas (erreur ${res.status})`;
+      console.log('[valorant]', res.status, msg);
+      return { setup, error: msg, badKey: res.status === 401 || res.status === 403, data: cached ? await withImages(cached.data) : null, at: cached && cached.at };
+    }
+    const j = await res.json();
+    const hist = ((j.data && j.data.history) || []).map((h) => ({ ...h, t: Date.parse(h.date) })).sort((a, b) => b.t - a.t);
+    const cur = hist[0];
+    const sod = new Date(); sod.setHours(0, 0, 0, 0);
+    const today = hist.filter((h) => h.t >= sod.getTime());
+    const data = {
+      name: (j.data.account && j.data.account.name) || v.name,
+      tag: (j.data.account && j.data.account.tag) || v.tag,
+      region: v.region,
+      tierId: cur ? cur.tier.id : 0,
+      tier: cur ? tierFr(cur.tier.name) : 'Non classé',
+      rr: cur ? cur.rr : 0,
+      today: { rr: today.reduce((a, h) => a + (h.last_change || 0), 0), w: today.filter((h) => h.last_change > 0).length, l: today.filter((h) => h.last_change < 0).length },
+      matches: hist.slice(0, 10).map((h) => ({
+        id: h.match_id, map: (h.map && h.map.name) || '?', mapId: h.map && h.map.id, t: h.t,
+        change: h.last_change || 0, rr: h.rr, tierId: h.tier && h.tier.id, tier: tierFr(h.tier && h.tier.name),
+      })),
+    };
+    valoCache = { who, at: Date.now(), data };
+    fs.promises.mkdir(valoDir, { recursive: true }).then(() => fs.promises.writeFile(valoLast, JSON.stringify(valoCache))).catch(() => {});
+    return { setup, data: await withImages(data), at: valoCache.at };
   });
 
   // =====================================================================

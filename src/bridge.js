@@ -33,7 +33,17 @@ class PSHost {
     this.proc = proc;
     proc.stdout.setEncoding('utf8');
     proc.stdout.on('data', (d) => this._data(d));
-    proc.stderr.on('data', (d) => console.error(`[ps:${this.name}]`, d.toString().trim()));
+    // la même erreur n'est écrite qu'une fois toutes les 10 minutes (évite de remplir le journal)
+    const seen = new Map();
+    proc.stderr.on('data', (d) => {
+      for (const msg of d.toString().split(/\r?\n/).map((x) => x.trim()).filter(Boolean)) {
+        const t = seen.get(msg);
+        if (t && Date.now() - t < 10 * 60e3) continue;
+        seen.set(msg, Date.now());
+        if (seen.size > 200) seen.delete(seen.keys().next().value);
+        console.error(`[ps:${this.name}]`, msg);
+      }
+    });
     proc.stdin.on('error', () => {});
     proc.on('error', (e) => console.error(`[ps:${this.name}] impossible de lancer PowerShell`, e.message));
     proc.on('exit', () => {
